@@ -1,0 +1,32 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials/
+secrets/
+
+# Local data and provider samples
+storage/
+fixtures/private/
+*.csv
+*.xlsx
+*.xls
+*.zip
+
+# Dependencies and builds
+node_modules/
+dist/
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+
+# Logs and local tooling
+*.log
+coverage/
+.DS_Store
+.vscode/
+.idea/
