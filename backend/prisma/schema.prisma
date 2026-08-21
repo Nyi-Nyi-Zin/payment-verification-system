@@ -24,6 +24,12 @@ enum Provider {
   WAVEPAY
 }
 
+enum TransactionDirection {
+  INCOMING
+  OUTGOING
+  UNKNOWN
+}
+
 enum ImportStatus {
   UPLOADED
   PARSING
@@ -135,14 +141,22 @@ model PaymentTransaction {
   id                    String              @id @default(uuid()) @db.Uuid
   provider              Provider
   externalTransactionId String?
+  transactionStatus     String?
+  direction             TransactionDirection @default(UNKNOWN)
   amount                Decimal             @db.Decimal(18, 2)
   currency              String              @default("MMK")
+  creditAmount          Decimal?            @db.Decimal(18, 2)
+  debitAmount           Decimal?            @db.Decimal(18, 2)
+  runningBalance        Decimal?            @db.Decimal(18, 2)
   transactionAtUtc      DateTime
   transactionAtLocal    DateTime
   localTimezone         String              @default("Asia/Yangon")
   businessDate          DateTime            @db.Date
   senderName            String?
+  senderPhone           String?
   receiverName          String?
+  receiverPhone         String?
+  description           String?
   reference             String?
   sourceImportId        String              @db.Uuid
   fingerprint           String
@@ -189,6 +203,8 @@ model OcrResult {
   ocrEngine                String
   ocrEngineVersion         String?
   provider                 Provider?
+  transactionStatus        String?
+  direction                TransactionDirection?
   rawText                  String?
   extractedAmount          Decimal?           @db.Decimal(18, 2)
   extractedCurrency        String?
@@ -196,7 +212,9 @@ model OcrResult {
   extractedDate            DateTime?          @db.Date
   extractedTime            String?
   extractedSender          String?
+  extractedSenderPhone     String?
   extractedReceiver        String?
+  extractedReceiverPhone   String?
   fieldConfidenceJson      Json?
   overallConfidence        Decimal?           @db.Decimal(5, 4)
   attemptNumber            Int                @default(1)

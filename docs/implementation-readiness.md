@@ -23,10 +23,10 @@ The following inputs materially affect implementation and should be supplied bef
 
 | Priority | Required input | Why it is needed | Suggested default if not specified |
 |---|---|---|---|
-| P0 | Actual KBZPay export sample | Parser headers, date/time, identifier, amount, status, and encoding | Do not finalize parser from assumed columns |
-| P0 | Actual AYA Pay export sample | Same as above for AYA Pay | Do not finalize parser from assumed columns |
+| P0 | Actual KBZPay export sample | Received Excel and PDF samples; Excel parser contract can now be fixture-tested, but operational confirmation is still needed | Use Excel as primary import; retain PDF as reference/fallback |
+| P0 | Actual AYA Pay export sample | AYA screenshot OCR contract is now defined, but export/history matching format is still unknown | Request incoming/history export before finalizing AYA import parser |
 | P0 | Actual WavePay export sample | Same as above for WavePay | Do not finalize parser from assumed columns |
-| P0 | Screenshot samples for all providers | OCR field positions, branding, compression, and layout variations | Use fixture-driven extraction; no production regex until samples exist |
+| P0 | Screenshot samples for all providers | AYA incoming/outgoing OCR fixtures are available; KBZPay and WavePay screenshot fixtures remain | Keep provider OCR fixture-driven; no final regex until all providers are covered |
 | P0 | Level 2 tolerance window | Candidate selection and auto-verification safety | Start in review-only mode; no Level 2 auto-verify |
 | P1 | ORM/migration choice | Database implementation and migration files | Prisma unless project preference differs |
 | P1 | Telegram bot token and webhook secret | End-to-end webhook integration | Keep integration disabled until supplied securely |
@@ -34,6 +34,7 @@ The following inputs materially affect implementation and should be supplied bef
 | P1 | Google Cloud Vision configuration | OCR integration and credentials | Provide project/service-account setup before OCR integration |
 | P1 | Admin role matrix | Approval and override permissions | One admin role for MVP, with all actions audited |
 | P1 | Business-date and run policy | Manual/scheduled batch scope and midnight behavior | Asia/Yangon; explicit date/date-range on every run |
+| P1 | Business wallet identity | Account name/phone for each provider to derive incoming/outgoing direction | Require configured wallet phone/name before direction-sensitive auto-verification |
 | P2 | Retention and backup policy | Data privacy and operations | Keep configurable; do not hard-code deletion behavior |
 | P2 | Deployment target | Docker, TLS, secrets, database, and monitoring setup | Docker Compose baseline |
 
