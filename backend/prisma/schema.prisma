@@ -1,0 +1,305 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  REVIEWER
+  OPERATOR
+}
+
+enum RecordStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum Provider {
+  KBZPAY
+  AYAPAY
+  WAVEPAY
+}
+
+enum ImportStatus {
+  UPLOADED
+  PARSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+enum ScreenshotStatus {
+  RECEIVED
+  PROCESSING
+  OCR_COMPLETED
+  PENDING_REVIEW
+  VERIFIED
+  DUPLICATE
+  UNMATCHED
+  FAILED
+  REJECTED
+}
+
+enum BatchStatus {
+  CREATED
+  RUNNING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULED
+}
+
+enum ReviewStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  MARKED_DUPLICATE
+  REPROCESSED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id                 String           @id @default(uuid()) @db.Uuid
+  role               UserRole
+  displayName        String
+  emailOrPhone       String           @unique
+  status             RecordStatus     @default(ACTIVE)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  imports            PaymentImport[]  @relation("UploadedImports")
+  batches            VerificationBatch[] @relation("CreatedBatches")
+  reviews            VerificationResult[] @relation("ReviewedResults")
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+}
+
+model TelegramUser {
+  id              String              @id @default(uuid()) @db.Uuid
+  telegramUserId  BigInt              @unique
+  username        String?
+  firstSeenAt     DateTime            @default(now())
+  lastSeenAt      DateTime            @updatedAt
+  screenshots     PaymentScreenshot[]
+}
+
+model PaymentImport {
+  id                 String                @id @default(uuid()) @db.Uuid
+  provider           Provider
+  businessDate       DateTime              @db.Date
+  fileName           String
+  storageKey         String
+  fileHash           String
+  parserVersion      String
+  totalRows          Int                   @default(0)
+  parsedRows         Int                   @default(0)
+  errorRows          Int                   @default(0)
+  status             ImportStatus          @default(UPLOADED)
+  uploadedById       String                @db.Uuid
+  createdAt          DateTime              @default(now())
+  completedAt        DateTime?
+  uploadedBy         User                  @relation("UploadedImports", fields: [uploadedById], references: [id])
+  errors             PaymentImportError[]
+  transactions       PaymentTransaction[]
+
+  @@unique([provider, fileHash])
+  @@index([provider, businessDate])
+}
+
+model PaymentImportError {
+  id               String        @id @default(uuid()) @db.Uuid
+  importId         String        @db.Uuid
+  sourceRowNumber  Int
+  rawRowReference  Json?
+  errorCode        String
+  errorMessage     String
+  createdAt        DateTime      @default(now())
+  paymentImport    PaymentImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([importId, sourceRowNumber])
+}
+
+model PaymentTransaction {
+  id                    String              @id @default(uuid()) @db.Uuid
+  provider              Provider
+  externalTransactionId String?
+  amount                Decimal             @db.Decimal(18, 2)
+  currency              String              @default("MMK")
+  transactionAtUtc      DateTime
+  transactionAtLocal    DateTime
+  localTimezone         String              @default("Asia/Yangon")
+  businessDate          DateTime            @db.Date
+  senderName            String?
+  receiverName          String?
+  reference             String?
+  sourceImportId        String              @db.Uuid
+  fingerprint           String
+  rawRowJson            Json?
+  createdAt             DateTime            @default(now())
+  sourceImport          PaymentImport      @relation(fields: [sourceImportId], references: [id])
+  usedTransaction       UsedTransaction?
+  verificationResults   VerificationResult[]
+
+  @@unique([provider, externalTransactionId])
+  @@index([provider, businessDate, amount])
+  @@index([provider, transactionAtUtc])
+  @@index([fingerprint])
+}
+
+model PaymentScreenshot {
+  id                    String              @id @default(uuid()) @db.Uuid
+  telegramUpdateId      BigInt              @unique
+  telegramMessageId     BigInt?
+  telegramUserId        String              @db.Uuid
+  storageKey            String
+  fileHash              String
+  mimeType              String
+  fileSizeBytes         Int
+  submittedProvider     Provider?
+  detectedProvider      Provider?
+  receivedAt            DateTime            @default(now())
+  status                ScreenshotStatus    @default(RECEIVED)
+  lastError             String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  telegramUser          TelegramUser        @relation(fields: [telegramUserId], references: [id])
+  ocrResults            OcrResult[]
+  verificationResults   VerificationResult[]
+  usedTransactions      UsedTransaction[]
+
+  @@index([fileHash])
+  @@index([status, receivedAt])
+}
+
+model OcrResult {
+  id                       String             @id @default(uuid()) @db.Uuid
+  screenshotId             String             @db.Uuid
+  ocrEngine                String
+  ocrEngineVersion         String?
+  provider                 Provider?
+  rawText                  String?
+  extractedAmount          Decimal?           @db.Decimal(18, 2)
+  extractedCurrency        String?
+  extractedTransactionId   String?
+  extractedDate            DateTime?          @db.Date
+  extractedTime            String?
+  extractedSender          String?
+  extractedReceiver        String?
+  fieldConfidenceJson      Json?
+  overallConfidence        Decimal?           @db.Decimal(5, 4)
+  attemptNumber            Int                @default(1)
+  status                   String
+  errorMessage             String?
+  createdAt                DateTime           @default(now())
+  screenshot              PaymentScreenshot  @relation(fields: [screenshotId], references: [id], onDelete: Cascade)
+
+  @@index([screenshotId, createdAt])
+}
+
+model VerificationBatch {
+  id              String               @id @default(uuid()) @db.Uuid
+  businessDate    DateTime             @db.Date
+  dateRangeEnd    DateTime?            @db.Date
+  status          BatchStatus          @default(CREATED)
+  triggerType     TriggerType
+  providerScope   Provider[]
+  configSnapshot  Json?
+  totalScreenshots Int                 @default(0)
+  processed       Int                  @default(0)
+  matched         Int                  @default(0)
+  duplicate       Int                  @default(0)
+  pendingReview   Int                  @default(0)
+  unmatched       Int                  @default(0)
+  failed          Int                  @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdById     String?              @db.Uuid
+  createdAt       DateTime             @default(now())
+  createdBy       User?                @relation("CreatedBatches", fields: [createdById], references: [id])
+  results         VerificationResult[]
+
+  @@index([businessDate, status])
+}
+
+model VerificationResult {
+  id                    String               @id @default(uuid()) @db.Uuid
+  batchId               String               @db.Uuid
+  screenshotId          String               @db.Uuid
+  provider              Provider?
+  transactionId         String?              @db.Uuid
+  status                ReviewStatus
+  matchLevel            Int?
+  matchScore            Decimal?             @db.Decimal(5, 4)
+  reasonCode            String
+  candidateSnapshot     Json?
+  ruleVersion           String?
+  toleranceSnapshot     Json?
+  reviewedById          String?              @db.Uuid
+  reviewedAt            DateTime?
+  reviewComment         String?
+  verifiedAt            DateTime?
+  createdAt             DateTime             @default(now())
+  batch                 VerificationBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  screenshot            PaymentScreenshot   @relation(fields: [screenshotId], references: [id])
+  transaction           PaymentTransaction? @relation(fields: [transactionId], references: [id])
+  reviewedBy            User?                @relation("ReviewedResults", fields: [reviewedById], references: [id])
+
+  @@unique([batchId, screenshotId])
+  @@index([status, createdAt])
+  @@index([transactionId])
+}
+
+model UsedTransaction {
+  id              String             @id @default(uuid()) @db.Uuid
+  provider        Provider
+  transactionId   String             @unique @db.Uuid
+  screenshotId    String             @db.Uuid
+  usedAt          DateTime           @default(now())
+  transaction     PaymentTransaction @relation(fields: [transactionId], references: [id])
+  screenshot      PaymentScreenshot  @relation(fields: [screenshotId], references: [id])
+
+  @@unique([provider, transactionId])
+}
+
+model Notification {
+  id               String              @id @default(uuid()) @db.Uuid
+  recipientUserId  String              @db.Uuid
+  type             String
+  payloadJson      Json
+  status           NotificationStatus  @default(PENDING)
+  sentAt           DateTime?
+  failureReason    String?
+  createdAt        DateTime            @default(now())
+  recipient        User                @relation(fields: [recipientUserId], references: [id])
+
+  @@index([recipientUserId, status])
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  actorUserId   String?  @db.Uuid
+  action        String
+  entityType    String
+  entityId      String
+  oldValueJson  Json?
+  newValueJson  Json?
+  reason        String?
+  ipAddress     String?
+  createdAt     DateTime @default(now())
+  actor         User?    @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorUserId, createdAt])
+}

@@ -1,0 +1,28 @@
+export enum ProviderCode {
+  KBZPAY = 'KBZPAY',
+  AYAPAY = 'AYAPAY',
+  WAVEPAY = 'WAVEPAY',
+}
+
+export enum TriggerType {
+  MANUAL = 'MANUAL',
+  SCHEDULED = 'SCHEDULED',
+}
+
+export enum ScreenshotStatus {
+  RECEIVED = 'RECEIVED',
+  PROCESSING = 'PROCESSING',
+  OCR_COMPLETED = 'OCR_COMPLETED',
+  PENDING_REVIEW = 'PENDING_REVIEW',
+  VERIFIED = 'VERIFIED',
+  DUPLICATE = 'DUPLICATE',
+  UNMATCHED = 'UNMATCHED',
+  FAILED = 'FAILED',
+  REJECTED = 'REJECTED',
+}
+
+export enum MatchLevel {
+  EXACT_TRANSACTION_ID = 1,
+  AMOUNT_DATE_TIME = 2,
+  NAME_OR_REFERENCE_SIMILARITY = 3,
+}

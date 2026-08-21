@@ -2,11 +2,11 @@
 
 A provider-aware payment verification system for KBZPay, AYA Pay, and WavePay.
 
-The current architecture supports Telegram screenshot collection, provider export import, OCR extraction, on-demand verification during the day, scheduled verification runs, duplicate detection, manual review, and reporting.
+The current architecture supports Telegram screenshot collection, provider export import, OCR extraction, on-demand verification during the day, scheduled verification runs, duplicate detection, manual review, and reporting. The repository now also includes an initial NestJS/Prisma backend foundation with a deterministic provider-neutral matching engine and unit tests.
 
 ## Repository Status
 
-This repository currently contains the approved architecture baseline and review notes. Application implementation will follow the implementation-readiness gates described in [`docs/payment-verification-architecture.md`](docs/payment-verification-architecture.md).
+This repository contains the approved architecture baseline and review notes, an initial NestJS/Prisma backend foundation, and a deterministic provider-neutral matching engine. Provider-specific parser/OCR behavior remains fixture-driven and is intentionally not finalized until actual provider samples are supplied. Implementation sequencing and blockers are tracked in [`docs/implementation-readiness.md`](docs/implementation-readiness.md).
 
 ## Version
 
@@ -32,3 +32,7 @@ Before provider-specific parser and OCR rules are finalized, the project require
 
 - [`docs/payment-verification-architecture.md`](docs/payment-verification-architecture.md)
 - [`docs/architecture-review.md`](docs/architecture-review.md)
+- [`docs/implementation-readiness.md`](docs/implementation-readiness.md)
+- [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md)
+- [`backend/prisma/schema.prisma`](backend/prisma/schema.prisma)
+- [`mobile/README.md`](mobile/README.md)
