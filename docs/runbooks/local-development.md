@@ -29,7 +29,7 @@ cd backend
 pnpm start:dev
 ```
 
-The health endpoint is `GET /api/v1/health`. The manual/scheduled batch contract is `POST /api/v1/verification/batches`.
+The health endpoint is `GET /api/v1/health`. Authentication endpoints are `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me`, and `POST /api/v1/auth/logout`. The protected import contract is `POST /api/v1/imports` as multipart form-data with `provider`, `businessDate`, and `file`. The manual/scheduled batch contract is `POST /api/v1/verification/batches`.
 
 ## Run tests
 
@@ -44,4 +44,4 @@ The current unit tests cover provider isolation, exact transaction-ID matching, 
 
 Every verification run must include an explicit provider scope and business date/date range. A manual run may be started during the day or at night. A scheduled run uses the same batch lifecycle and differs by trigger metadata. Concurrent active batches for the same scope must be rejected or made idempotent.
 
-Do not enable provider-specific auto-verification until actual export and screenshot samples have been converted into parser/OCR fixtures and the Level 2 tolerance policy has been approved. Ambiguous matches should remain in review-only mode.
+Do not enable provider-specific auto-verification until actual export and screenshot samples have been converted into parser/OCR fixtures and the Level 2 tolerance policy has been approved. Configure each business wallet identity before relying on direction classification. Ambiguous matches, unknown direction, and outgoing payments should remain in review-only mode by default.
