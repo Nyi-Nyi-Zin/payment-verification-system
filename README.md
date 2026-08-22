@@ -35,6 +35,8 @@ Before provider-specific parser and OCR rules are finalized, the project require
 - [`docs/implementation-readiness.md`](docs/implementation-readiness.md)
 - [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md)
 - [`docs/runbooks/security-and-verification-safety.md`](docs/runbooks/security-and-verification-safety.md)
+- [`docs/runbooks/telegram-webhook-and-ocr.md`](docs/runbooks/telegram-webhook-and-ocr.md)
+- [`docs/telegram-webhook-research.md`](docs/telegram-webhook-research.md)
 - [`backend/prisma/schema.prisma`](backend/prisma/schema.prisma)
 - [`mobile/README.md`](mobile/README.md)
 - [`mobile/api-contract.md`](mobile/api-contract.md)

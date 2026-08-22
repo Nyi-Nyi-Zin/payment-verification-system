@@ -7,15 +7,23 @@ import { StatusTransitionService } from './status.transitions';
 import { TransactionReservationService } from './transaction.reservation.service';
 import { ReviewController } from './review.controller';
 import { ReviewService } from './review.service';
+import { OcrVerificationService } from './ocr-verification.service';
+import { OcrVerificationController } from './ocr-verification.controller';
 
 @Module({
-  controllers: [VerificationController, BusinessWalletController, ReviewController],
+  controllers: [
+    VerificationController,
+    BusinessWalletController,
+    ReviewController,
+    OcrVerificationController,
+  ],
   providers: [
     VerificationService,
     BusinessWalletService,
     StatusTransitionService,
     TransactionReservationService,
     ReviewService,
+    OcrVerificationService,
   ],
   exports: [
     VerificationService,
@@ -23,6 +31,7 @@ import { ReviewService } from './review.service';
     StatusTransitionService,
     TransactionReservationService,
     ReviewService,
+    OcrVerificationService,
   ],
 })
 export class VerificationModule {}

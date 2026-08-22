@@ -6,6 +6,9 @@ import { DatabaseModule } from './database.module';
 import { HealthController } from './health/health.controller';
 import { ImportModule } from './imports/import.module';
 import { StorageModule } from './storage/storage.module';
+import { TelegramModule } from './telegram/telegram.module';
+import { OcrModule } from './ocr/ocr.module';
+import { ProvidersModule } from './providers/providers.module';
 import { VerificationModule } from './verification/verification.module';
 
 @Module({
@@ -19,6 +22,9 @@ import { VerificationModule } from './verification/verification.module';
     AuthModule,
     StorageModule,
     ImportModule,
+    TelegramModule,
+    OcrModule,
+    ProvidersModule,
     VerificationModule,
   ],
   controllers: [HealthController],
