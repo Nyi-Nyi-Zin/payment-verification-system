@@ -43,6 +43,14 @@ The app should support the following visual states: loading, empty, configuratio
 
 Unknown direction, missing business wallet configuration, ambiguous candidates, and outgoing transactions when outgoing auto-verification is disabled must be shown as review-required states rather than as successful verification.
 
+## Manual Review
+
+| Method | Path | Required role | Purpose |
+|---|---|---|---|
+| `PATCH` | `/reviews/:screenshotId/resolve` | `ADMIN`, `REVIEWER` | Approve, reject, mark duplicate, or reprocess OCR |
+
+The request contains `action`, optional `transactionId`, and optional `comment`. Approval and duplicate actions require a selected transaction. The backend performs status validation, provider consistency checks, transaction reservation, and audit logging.
+
 ## Pending Backend Contract
 
-Review list/detail endpoints, report endpoints, notification registration, and paginated transaction browsing remain to be added after the batch orchestration and review-resolution APIs are finalized.
+Review list/detail endpoints, report endpoints, notification registration, and paginated transaction browsing remain to be added after the batch orchestration APIs are finalized.
