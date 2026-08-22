@@ -1,4 +1,5 @@
 import {
+  ArrayMinSize,
   IsArray,
   IsDateString,
   IsEnum,
@@ -20,6 +21,7 @@ export class StartVerificationDto {
   dateRangeEnd?: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   @IsEnum(ProviderCode, { each: true })
   providers!: ProviderCode[];
 

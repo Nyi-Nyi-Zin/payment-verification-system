@@ -19,6 +19,21 @@ export class UpsertBusinessWalletDto {
   allowOutgoingAutoVerify = false;
 }
 
+export class UpsertBusinessWalletBodyDto {
+  @IsString()
+  @Length(1, 160)
+  accountName!: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(6, 32)
+  phoneNumber?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  allowOutgoingAutoVerify = false;
+}
+
 export interface BusinessWalletConfigView {
   provider: ProviderCode;
   accountName: string;

@@ -34,6 +34,7 @@ Before provider-specific parser and OCR rules are finalized, the project require
 - [`docs/architecture-review.md`](docs/architecture-review.md)
 - [`docs/implementation-readiness.md`](docs/implementation-readiness.md)
 - [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md)
+- [`docs/runbooks/security-and-verification-safety.md`](docs/runbooks/security-and-verification-safety.md)
 - [`backend/prisma/schema.prisma`](backend/prisma/schema.prisma)
 - [`mobile/README.md`](mobile/README.md)
 - [`docs/provider-sample-analysis-2026-08.md`](docs/provider-sample-analysis-2026-08.md)
