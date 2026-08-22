@@ -101,6 +101,19 @@ model TelegramUser {
   screenshots     PaymentScreenshot[]
 }
 
+model BusinessWalletConfig {
+  id                     String         @id @default(uuid()) @db.Uuid
+  provider               Provider       @unique
+  accountName            String
+  normalizedAccountName  String
+  phoneNumber            String?
+  normalizedPhoneNumber  String?
+  allowOutgoingAutoVerify Boolean       @default(false)
+  status                 RecordStatus   @default(ACTIVE)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+}
+
 model PaymentImport {
   id                 String                @id @default(uuid()) @db.Uuid
   provider           Provider

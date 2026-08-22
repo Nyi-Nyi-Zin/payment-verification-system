@@ -32,7 +32,7 @@ Therefore the AYA OCR model must not only extract names and phone numbers; it mu
 | `OUTGOING` | The configured wallet/account identity matches sender name or sender phone. |
 | `UNKNOWN` | The account identity is not configured, fields are unreadable, or both sides are ambiguous. |
 
-For the current payment-verification use case, the default auto-verification candidate should normally be `INCOMING`, because the system is expected to verify customer payments received by the business wallet. Outgoing transfers should remain visible but should not be auto-verified unless the business rule explicitly allows them.
+For the current payment-verification use case, the default auto-verification candidate should normally be `INCOMING`, because the system is expected to verify customer payments received by the business wallet. Outgoing transfers should remain visible but should not be auto-verified unless the business rule explicitly allows them. The backend now stores this policy in a provider-specific `BusinessWalletConfig` record with `accountName`, optional `phoneNumber`, and `allowOutgoingAutoVerify`.
 
 ## 2. KBZPay PDF Findings
 
@@ -118,9 +118,22 @@ source_import_id
 raw_row_json
 ```
 
-The screenshot OCR model should include the same identity/direction fields where the provider exposes them. For KBZPay, the Excel `Credit`/`Debit` columns provide the authoritative direction. For AYA Pay, direction must be derived from the configured wallet name/phone compared with the OCR-extracted sender/receiver fields.
+The screenshot OCR model should include the same identity/direction fields where the provider exposes them. For KBZPay, the Excel `Credit`/`Debit` columns provide the authoritative direction. For AYA Pay, direction is derived by the backend direction classifier from the configured wallet name/phone compared with the OCR-extracted sender/receiver fields. A match on both sides or no match on either side returns `UNKNOWN`; it is not eligible for automatic verification.
 
-## 6. What Is Still Needed
+## 6. Business Wallet Configuration Required Per Provider
+
+Before automatic verification is enabled, configure one business wallet identity per provider:
+
+```text
+provider: KBZPAY | AYAPAY | WAVEPAY
+accountName: exact wallet/account display name
+phoneNumber: wallet phone number, if available
+allowOutgoingAutoVerify: false by default
+```
+
+The name is normalized with Unicode normalization, case normalization, and punctuation/space removal. Phone numbers are normalized to a comparable Myanmar format, including conversion of `+959...` to `09...`. The classifier uses exact normalized name or phone equality; it does not use loose substring matching. If both sender and receiver match, or neither matches, direction is `UNKNOWN` and the case goes to review.
+
+## 7. What Is Still Needed
 
 The AYA Pay screenshots are sufficient to begin the AYA OCR field contract, but an actual AYA Pay wallet history export is still needed to implement the matching side reliably. The following samples remain required:
 
@@ -131,6 +144,6 @@ The AYA Pay screenshots are sufficient to begin the AYA OCR field contract, but 
 5. Confirmation of the business wallet identity for each provider: account name, phone number, or another stable identifier used to derive incoming/outgoing direction.
 6. Confirmation that only successful incoming transactions should be eligible for automatic verification.
 
-## 7. Recommendation
+## 8. Recommendation
 
 Use **KBZPay Excel as the primary import format** for the supplied statement. Keep the PDF as a reference/audit attachment and defer PDF parsing unless the client regularly provides PDF only. Use the AYA screenshots as OCR fixtures, but do not finalize AYA matching until the corresponding AYA export/history format and business-wallet identity are supplied.

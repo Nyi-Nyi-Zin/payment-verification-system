@@ -5,6 +5,7 @@ export interface MatchingConfig {
   beforeMinutes: number;
   afterMinutes: number;
   allowLevelThreeAutoVerify: boolean;
+  allowOutgoingAutoVerify: boolean;
 }
 
 export class MatchingEngine {
@@ -17,8 +18,18 @@ export class MatchingEngine {
       return this.review('PROVIDER_NOT_DETECTED');
     }
 
+    if (input.direction === 'UNKNOWN') {
+      return this.review('DIRECTION_UNKNOWN');
+    }
+
+    if (input.direction === 'OUTGOING' && !config.allowOutgoingAutoVerify) {
+      return this.review('OUTGOING_AUTO_VERIFY_DISABLED');
+    }
+
     const providerCandidates = candidates.filter(
-      (candidate) => candidate.provider === input.provider,
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.direction === input.direction,
     );
 
     if (providerCandidates.length === 0) {

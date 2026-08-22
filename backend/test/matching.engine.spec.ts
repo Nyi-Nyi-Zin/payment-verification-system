@@ -7,6 +7,7 @@ const candidate = (
 ): MatchCandidate => ({
   transactionId: 'TX-001',
   provider: ProviderCode.KBZPAY,
+  direction: 'INCOMING',
   amount: '1000.00',
   currency: 'MMK',
   transactionAtUtc: new Date('2026-08-21T10:00:00.000Z'),
@@ -19,12 +20,14 @@ describe('MatchingEngine', () => {
     beforeMinutes: 2,
     afterMinutes: 2,
     allowLevelThreeAutoVerify: false,
+    allowOutgoingAutoVerify: false,
   };
 
   it('matches an exact transaction ID only within the same provider', () => {
     const result = engine.decide(
       {
         provider: ProviderCode.KBZPAY,
+        direction: 'INCOMING',
         transactionId: ' tx-001 ',
         amount: '1000',
         currency: 'MMK',
@@ -43,6 +46,7 @@ describe('MatchingEngine', () => {
     const result = engine.decide(
       {
         provider: ProviderCode.KBZPAY,
+        direction: 'INCOMING',
         transactionId: null,
         amount: '1000.00',
         currency: 'MMK',
@@ -60,6 +64,7 @@ describe('MatchingEngine', () => {
     const result = engine.decide(
       {
         provider: ProviderCode.KBZPAY,
+        direction: 'INCOMING',
         transactionId: null,
         amount: '1000.00',
         currency: 'MMK',
@@ -77,6 +82,7 @@ describe('MatchingEngine', () => {
     const result = engine.decide(
       {
         provider: ProviderCode.KBZPAY,
+        direction: 'INCOMING',
         transactionId: null,
         amount: '1000.00',
         currency: 'MMK',
