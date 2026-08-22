@@ -147,3 +147,34 @@ The AYA Pay screenshots are sufficient to begin the AYA OCR field contract, but 
 ## 8. Recommendation
 
 Use **KBZPay Excel as the primary import format** for the supplied statement. Keep the PDF as a reference/audit attachment and defer PDF parsing unless the client regularly provides PDF only. Use the AYA screenshots as OCR fixtures, but do not finalize AYA matching until the corresponding AYA export/history format and business-wallet identity are supplied.
+
+
+## 9. WavePay Screenshot Findings
+
+The supplied WavePay receipt exposes the following fields:
+
+| Screenshot field | Canonical field | Observed value / notes |
+|---|---|---|
+| Status banner | `transaction_status` | `Successful`; only successful status should be eligible for automatic verification. |
+| Headline amount | `amount` | `9,800.00 Ks`; normalize to `9800.00` and canonical currency `MMK`. |
+| To | `receiver_name` | `Shwe Yee Moe`; the receipt does not show a sender name. |
+| Recipient number | `receiver_phone` | `9885713007`; normalize to the configured Myanmar phone format. |
+| Type | `transaction_type` | `Account`. |
+| Fees | `fee_amount` | `0.00 Ks`; retain for validation/reporting but do not use as the payment amount. |
+| Amount | `amount` | `9,800.00 Ks`; validate against the headline amount when both are extracted. |
+| Transaction ID | `external_transaction_id` | `916641866`; store as a string. |
+| Date & Time | `transaction_at_local` | `22 August 2026 • 11:24 AM`; normalize using `Asia/Yangon`. |
+| Receipt branding | `provider` | `receipt by Wave`; use as a provider-detection signal. |
+
+The current screenshot appears to represent a transfer **to** the displayed recipient, but it does not expose the sender identity. Therefore, direction must remain `UNKNOWN` until the configured business wallet identity matches the recipient or an authoritative WavePay export provides a credit/debit direction. The screenshot extractor intentionally does not guess direction from the word `To` alone.
+
+## 10. WavePay Inputs Still Required
+
+1. WavePay wallet history/export file, preferably Excel or CSV, with transaction date/time, transaction ID, description, sender/recipient or account information, amount, fee, status, and balance if available.
+2. One WavePay incoming receipt where the business wallet is the recipient, and one outgoing receipt where the business wallet is the sender, if both transaction directions will be retained.
+3. The business WavePay wallet account name and phone number used for direction classification.
+4. Confirmation whether the displayed recipient phone can omit the leading zero and whether the same formatting is used in the export.
+5. Examples of failed, pending, reversed, refunded, or cancelled WavePay transactions, if they appear in the history export.
+6. Confirmation that the WavePay `Transaction ID` is unique within the wallet history and can be used as the Level 1 matching key.
+
+The WavePay OCR extractor and fixture test have been added to the backend. Production matching still requires the WavePay export because a screenshot alone cannot prove the transaction exists in the business wallet history or establish direction when the sender is not displayed.

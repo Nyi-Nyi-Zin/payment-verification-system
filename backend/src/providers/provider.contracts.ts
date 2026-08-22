@@ -63,6 +63,7 @@ export interface OcrExtraction {
   receiverPhone: string | null;
   transactionType?: string;
   totalAmount?: string;
+  feeAmount?: string;
   notes?: string;
   fieldConfidence: Record<string, number>;
   overallConfidence: number | null;
