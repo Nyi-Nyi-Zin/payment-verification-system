@@ -1,5 +1,12 @@
 # Payment Verification System
 
+## KBZPay review MVP
+
+A responsive Web Admin and connected NestJS/PostgreSQL workflow are available on the MVP branch: authenticated Excel import, private receipt upload, optional OCR, editable receipt details, candidate matching, manual approval/rejection, duplicate protection and review audit records.
+
+**All approvals are manual.** See [MVP setup, daily workflow and verification](docs/runbooks/mvp.md) for the current implementation and its boundaries. The architecture documentation below describes the broader target system and is not a claim that every planned feature is implemented.
+
+
 A provider-aware payment verification system for KBZPay, AYA Pay, and WavePay.
 
 The current architecture supports Telegram screenshot collection, provider export import, OCR extraction, on-demand verification during the day, scheduled verification runs, duplicate detection, manual review, and reporting. The repository now also includes an initial NestJS/Prisma backend foundation with a deterministic provider-neutral matching engine and unit tests.
@@ -41,3 +48,4 @@ Before provider-specific parser and OCR rules are finalized, the project require
 - [`mobile/README.md`](mobile/README.md)
 - [`mobile/api-contract.md`](mobile/api-contract.md)
 - [`docs/provider-sample-analysis-2026-08.md`](docs/provider-sample-analysis-2026-08.md)
+

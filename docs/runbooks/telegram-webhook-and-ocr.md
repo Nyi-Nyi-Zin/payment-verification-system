@@ -9,7 +9,7 @@ The Telegram webhook accepts a Telegram `Update`, validates the `X-Telegram-Bot-
 The endpoint is:
 
 ```text
-POST /telegram/webhook
+POST /api/v1/telegram/webhook
 ```
 
 The route is intentionally not protected by the admin JWT guard because Telegram is the event source. Its protection is the webhook secret header, HTTPS termination, request-size limits, and persisted `update_id` idempotency. Telegram's official Bot API documents the `secret_token` setting and the `X-Telegram-Bot-Api-Secret-Token` header [1]. Telegram also requires a valid SSL certificate for webhooks, does not support redirects, and supports ports 443, 80, 88, and 8443 [2].
@@ -28,7 +28,7 @@ Register the webhook from a secure administration environment. Do not commit the
 
 ```bash
 curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  --data-urlencode "url=https://<api-domain>/telegram/webhook" \
+  --data-urlencode "url=https://<api-domain>/api/v1/telegram/webhook" \
   --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
   --data-urlencode "allowed_updates=[\"message\"]"
 ```
@@ -74,3 +74,4 @@ The following are still required before production operation:
 
 [1]: https://core.telegram.org/bots/api "Telegram Bot API"
 [2]: https://core.telegram.org/bots/faq "Bots FAQ"
+

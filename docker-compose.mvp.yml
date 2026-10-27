@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: payment_verification
+      POSTGRES_USER: payment_verification
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U payment_verification']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://payment_verification:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/payment_verification?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /app/data/objects
+      GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+    command: [sh, -c, 'pnpm prisma:migrate:deploy && pnpm db:seed && pnpm start']
+    ports: ['127.0.0.1:3000:3000']
+    volumes: [receipt_data:/app/data]
+volumes:
+  postgres_data:
+  receipt_data:

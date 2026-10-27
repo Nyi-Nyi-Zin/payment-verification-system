@@ -214,9 +214,11 @@ model PaymentTransaction {
 
 model PaymentScreenshot {
   id                    String              @id @default(uuid()) @db.Uuid
-  telegramUpdateId      BigInt              @unique
+  telegramUpdateId      BigInt?             @unique
   telegramMessageId     BigInt?
-  telegramUserId        String              @db.Uuid
+  telegramUserId        String?             @db.Uuid
+  source                String              @default("TELEGRAM")
+  businessDate          DateTime?           @db.Date
   storageKey            String
   fileHash              String
   mimeType              String
@@ -228,7 +230,7 @@ model PaymentScreenshot {
   lastError             String?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
-  telegramUser          TelegramUser        @relation(fields: [telegramUserId], references: [id])
+  telegramUser          TelegramUser?       @relation(fields: [telegramUserId], references: [id])
   ocrResults            OcrResult[]
   verificationResults   VerificationResult[]
   usedTransactions      UsedTransaction[]
@@ -323,7 +325,7 @@ model UsedTransaction {
   id              String             @id @default(uuid()) @db.Uuid
   provider        Provider
   transactionId   String             @unique @db.Uuid
-  screenshotId    String             @db.Uuid
+  screenshotId    String             @unique @db.Uuid
   usedAt          DateTime           @default(now())
   transaction     PaymentTransaction @relation(fields: [transactionId], references: [id])
   screenshot      PaymentScreenshot  @relation(fields: [screenshotId], references: [id])
@@ -361,3 +363,4 @@ model AuditLog {
   @@index([entityType, entityId, createdAt])
   @@index([actorUserId, createdAt])
 }
+

@@ -8,7 +8,8 @@ credentials/
 secrets/
 
 # Local data and provider samples
-storage/
+/storage/
+backend/data/
 fixtures/private/
 *.csv
 *.xlsx
@@ -30,3 +31,4 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+

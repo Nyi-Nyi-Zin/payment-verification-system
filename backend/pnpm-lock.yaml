@@ -41,6 +41,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      dotenv:
+        specifier: ^16.6.1
+        version: 16.6.1
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
