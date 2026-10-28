@@ -4,5 +4,6 @@ dist
 .env.*
 *.log
 coverage
+data
 ../fixtures/private
 ../storage

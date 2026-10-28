@@ -12,10 +12,17 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
+    "test:ui": "npm --prefix ../frontend test",
+    "test:ui-browser": "node scripts/ui-qa.cjs",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "prisma:migrate:dev": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "setup:local": "node scripts/setup-local.cjs",
+    "setup:ocr": "node scripts/setup-ocr.cjs",
+    "db:seed": "node scripts/seed.cjs",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "test:e2e": "node --test --test-concurrency=1 test/mvp.e2e.cjs test/auth.e2e.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1115.0",
@@ -29,8 +36,11 @@
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "dotenv": "^16.6.1",
+    "google-auth-library": "^11.3.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "tesseract.js": "7.0.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

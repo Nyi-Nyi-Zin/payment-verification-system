@@ -1,6 +1,10 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../database.prisma';
-import { ProviderCode } from '../common/enums/domain.enums';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import { PrismaService } from "../database.prisma";
+import { ProviderCode } from "../common/enums/domain.enums";
 
 @Injectable()
 export class TransactionReservationService {
@@ -12,17 +16,21 @@ export class TransactionReservationService {
     screenshotId: string;
   }): Promise<{ reserved: true; transactionId: string }> {
     return this.prisma.$transaction(async (transaction) => {
-      const paymentTransaction = await transaction.paymentTransaction.findUnique({
-        where: { id: input.transactionId },
-        select: { id: true, provider: true },
-      });
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`import:${input.provider}`}))`;
+      const paymentTransaction =
+        await transaction.paymentTransaction.findUnique({
+          where: { id: input.transactionId },
+          select: { id: true, provider: true },
+        });
 
       if (!paymentTransaction) {
-        throw new NotFoundException('Payment transaction was not found');
+        throw new NotFoundException("Payment transaction was not found");
       }
 
       if (paymentTransaction.provider !== input.provider) {
-        throw new ConflictException('Provider scope does not match transaction');
+        throw new ConflictException(
+          "Provider scope does not match transaction",
+        );
       }
 
       try {
@@ -36,10 +44,12 @@ export class TransactionReservationService {
       } catch (error) {
         if (
           error instanceof Error &&
-          'code' in error &&
-          (error as { code?: string }).code === 'P2002'
+          "code" in error &&
+          (error as { code?: string }).code === "P2002"
         ) {
-          throw new ConflictException('Payment transaction is already reserved');
+          throw new ConflictException(
+            "Payment transaction is already reserved",
+          );
         }
         throw error;
       }

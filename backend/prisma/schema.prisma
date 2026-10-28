@@ -92,7 +92,10 @@ model User {
   emailOrPhone       String           @unique
   status             RecordStatus     @default(ACTIVE)
   passwordHash       String?
+  googleSubject      String?          @unique
   refreshTokenHash   String?
+  mustChangePassword Boolean          @default(false)
+  tempPasswordExpiresAt DateTime?
   lastLoginAt        DateTime?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
@@ -101,6 +104,29 @@ model User {
   reviews            VerificationResult[] @relation("ReviewedResults")
   notifications      Notification[]
   auditLogs          AuditLog[]
+  sessions           AuthSession[]
+}
+
+model AuthSession {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  refreshHash String
+  clientType  String
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model AuthRateLimit {
+  key       String   @id
+  attempts  Int      @default(0)
+  resetsAt  DateTime
+
+  @@index([resetsAt])
 }
 
 model TelegramUser {
@@ -198,11 +224,11 @@ model PaymentTransaction {
   receiverPhone         String?
   description           String?
   reference             String?
-  sourceImportId        String              @db.Uuid
+  sourceImportId        String?             @db.Uuid
   fingerprint           String
   rawRowJson            Json?
   createdAt             DateTime            @default(now())
-  sourceImport          PaymentImport      @relation(fields: [sourceImportId], references: [id])
+  sourceImport          PaymentImport?     @relation(fields: [sourceImportId], references: [id], onDelete: SetNull)
   usedTransaction       UsedTransaction?
   verificationResults   VerificationResult[]
 
@@ -214,9 +240,11 @@ model PaymentTransaction {
 
 model PaymentScreenshot {
   id                    String              @id @default(uuid()) @db.Uuid
-  telegramUpdateId      BigInt              @unique
+  telegramUpdateId      BigInt?             @unique
   telegramMessageId     BigInt?
-  telegramUserId        String              @db.Uuid
+  telegramUserId        String?             @db.Uuid
+  source                String              @default("TELEGRAM")
+  businessDate          DateTime?           @db.Date
   storageKey            String
   fileHash              String
   mimeType              String
@@ -228,7 +256,7 @@ model PaymentScreenshot {
   lastError             String?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
-  telegramUser          TelegramUser        @relation(fields: [telegramUserId], references: [id])
+  telegramUser          TelegramUser?       @relation(fields: [telegramUserId], references: [id])
   ocrResults            OcrResult[]
   verificationResults   VerificationResult[]
   usedTransactions      UsedTransaction[]
@@ -323,10 +351,10 @@ model UsedTransaction {
   id              String             @id @default(uuid()) @db.Uuid
   provider        Provider
   transactionId   String             @unique @db.Uuid
-  screenshotId    String             @db.Uuid
+  screenshotId    String             @unique @db.Uuid
   usedAt          DateTime           @default(now())
   transaction     PaymentTransaction @relation(fields: [transactionId], references: [id])
-  screenshot      PaymentScreenshot  @relation(fields: [screenshotId], references: [id])
+  screenshot      PaymentScreenshot  @relation(fields: [screenshotId], references: [id], onDelete: Cascade)
 
   @@unique([provider, transactionId])
 }
@@ -361,3 +389,4 @@ model AuditLog {
   @@index([entityType, entityId, createdAt])
   @@index([actorUserId, createdAt])
 }
+

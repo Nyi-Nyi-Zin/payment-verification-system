@@ -8,6 +8,8 @@
 
 All endpoints except login and refresh require `Authorization: Bearer <accessToken>`. The app must never contain Telegram, R2, S3, Google Vision, or JWT secret values.
 
+Each account supports one active device. Login replaces the prior session; logout, role/status changes, and password changes/resets immediately invalidate issued access tokens. Refresh rotates the token and never extends the session beyond 30 days after login. Accounts with mustChangePassword=true must call POST /auth/change-password with currentPassword and newPassword before using the workspace, then sign in again. displayName and mustChangePassword are included in identity responses. The /auth/browser/* cookie endpoints are for the web client; native clients retain the token endpoints below.
+
 ## Authentication
 
 | Method | Path | Purpose |

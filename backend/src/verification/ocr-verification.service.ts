@@ -1,290 +1,421 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
-import { Provider as PrismaProvider } from '@prisma/client';
-import { ConfigService } from '@nestjs/config';
-import { PrismaService } from '../database.prisma';
-import { S3Storage } from '../storage/s3.storage';
-import { ProviderCode } from '../common/enums/domain.enums';
-import { ProviderRegistry } from '../providers/provider-registry';
-import { OcrEngineResult } from '../ocr/ocr.engine';
-import { GoogleVisionOcrEngine } from '../ocr/ocr.engine';
-import { DirectionClassifier } from './direction.classifier';
-import { MatchingEngine } from './matching.engine';
-import { MatchCandidate, OcrMatchInput } from './verification.dto';
+} from "@nestjs/common";
+import {
+  Prisma,
+  Provider,
+  PaymentScreenshot,
+  ScreenshotStatus,
+} from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
+import { PrismaService } from "../database.prisma";
+import { S3Storage } from "../storage/s3.storage";
+import { ProviderCode } from "../common/enums/domain.enums";
+import { businessDate, receiptTime } from "../common/business-date";
+import { ProviderRegistry } from "../providers/provider-registry";
+import { OcrExtraction } from "../providers/provider.contracts";
+import { OcrServiceError } from "../ocr/ocr.engine";
+import { ReceiptOcrEngine } from "../ocr/receipt-ocr.engine";
+import { MatchingEngine } from "./matching.engine";
+import { MatchCandidate } from "./verification.dto";
+import { ReceiptDetailsDto } from "./receipt.dto";
 
 @Injectable()
 export class OcrVerificationService {
-  private readonly directionClassifier = new DirectionClassifier();
-  private readonly matchingEngine = new MatchingEngine();
-
+  private readonly matching = new MatchingEngine();
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: S3Storage,
-    private readonly ocr: GoogleVisionOcrEngine,
+    private readonly ocr: ReceiptOcrEngine,
     private readonly providers: ProviderRegistry,
     private readonly config: ConfigService,
   ) {}
 
-  async processScreenshot(screenshotId: string, batchId?: string) {
-    const screenshot = await this.prisma.paymentScreenshot.findUnique({
-      where: { id: screenshotId },
-    });
-    if (!screenshot) {
-      throw new NotFoundException('Screenshot was not found');
-    }
-
-    await this.prisma.paymentScreenshot.update({
-      where: { id: screenshotId },
-      data: { status: 'PROCESSING', lastError: null },
-    });
-
+  async processScreenshot(
+    screenshotId: string,
+    batchId?: string,
+    actorId?: string,
+  ) {
+    const screenshot = await this.claim(screenshotId, batchId);
+    let extraction: OcrExtraction | null = null;
+    let reason: string | null = null;
+    let engine = this.ocr.driver;
+    let version = "v1";
     try {
-      const image = await this.storage.getObject(screenshot.storageKey);
-      const ocrResult = await this.ocr.extractText(image);
-      const provider = this.detectProvider(screenshot.submittedProvider, ocrResult.text);
-      const extractor = provider ? this.providers.getExtractor(provider) : null;
-      if (!provider || !extractor) {
-        return this.failToReview(
-          screenshotId,
-          batchId,
-          'PROVIDER_NOT_DETECTED_OR_EXTRACTOR_UNAVAILABLE',
-          ocrResult,
-          provider,
-        );
-      }
-
-      const extraction = extractor.extract(ocrResult.text);
-      const wallet = await this.prisma.businessWalletConfig.findUnique({
-        where: { provider: provider as unknown as PrismaProvider },
-      });
-      const classification = wallet
-        ? this.directionClassifier.classifyOcr(
-            {
-              provider: wallet.provider as unknown as ProviderCode,
-              accountName: wallet.accountName,
-              phoneNumber: wallet.phoneNumber,
-              allowOutgoingAutoVerify: wallet.allowOutgoingAutoVerify,
-            },
-            extraction,
-          )
-        : {
-            provider,
-            direction: 'UNKNOWN' as const,
-            matchedBy: 'NONE' as const,
-            reasonCode: 'BUSINESS_WALLET_NOT_FOUND_IN_PARTIES' as const,
-          };
-      const transactionAtUtc = this.parseReceiptDateTime(extraction.date, extraction.time);
-      const ocrRecord = await this.prisma.ocrResult.create({
-        data: {
-          screenshotId,
-          ocrEngine: ocrResult.engine,
-          ocrEngineVersion: ocrResult.engineVersion,
-          provider: provider as unknown as PrismaProvider,
-          transactionStatus: extraction.transactionStatus,
-          direction: classification.direction,
-          rawText: ocrResult.text,
-          extractedAmount: extraction.amount ? Number(extraction.amount) : null,
-          extractedCurrency: extraction.currency,
-          extractedTransactionId: extraction.transactionId,
-          extractedDate: extraction.date ? new Date(`${extraction.date}T00:00:00.000Z`) : null,
-          extractedTime: extraction.time,
-          extractedSender: extraction.sender,
-          extractedSenderPhone: extraction.senderPhone,
-          extractedReceiver: extraction.receiver,
-          extractedReceiverPhone: extraction.receiverPhone,
-          fieldConfidenceJson: extraction.fieldConfidence,
-          overallConfidence: extraction.overallConfidence,
-          status: 'COMPLETED',
-        },
-        select: { id: true },
-      });
-
-      await this.prisma.paymentScreenshot.update({
-        where: { id: screenshotId },
-        data: {
-          detectedProvider: provider as unknown as PrismaProvider,
-          status: 'OCR_COMPLETED',
-        },
-      });
-
-      if (!batchId || !transactionAtUtc || classification.direction === 'UNKNOWN') {
-        return this.markPendingReview(
-          screenshotId,
-          batchId,
-          ocrRecord.id,
-          classification.direction === 'UNKNOWN'
-            ? classification.reasonCode
-            : 'BATCH_OR_TRANSACTION_TIME_REQUIRED',
-        );
-      }
-
-      const candidates = await this.loadCandidates(provider, extraction.date);
-      const decision = this.matchingEngine.decide(
-        {
-          provider,
-          direction: classification.direction,
-          transactionId: extraction.transactionId,
-          amount: extraction.amount,
-          currency: extraction.currency,
-          transactionAtUtc,
-        },
-        candidates,
-        {
-          beforeMinutes: this.config.get<number>('verification.defaultToleranceBeforeMinutes') ?? 2,
-          afterMinutes: this.config.get<number>('verification.defaultToleranceAfterMinutes') ?? 2,
-          allowLevelThreeAutoVerify: false,
-          allowOutgoingAutoVerify: wallet?.allowOutgoingAutoVerify ?? false,
-        },
+      const result = await this.ocr.extractText(
+        await this.storage.getObject(screenshot.storageKey),
       );
-
-      await this.prisma.verificationResult.create({
-        data: {
-          batchId,
-          screenshotId,
-          provider: provider as unknown as PrismaProvider,
-          transactionId: decision.candidate?.transactionId ?? null,
-          status: decision.status === 'VERIFIED' ? 'APPROVED' : 'OPEN',
-          matchLevel: decision.matchLevel ?? null,
-          matchScore: decision.matchScore ?? null,
-          reasonCode: decision.reasonCode,
-          candidateSnapshot: decision.candidate
-            ? (JSON.parse(JSON.stringify([decision.candidate])) as object)
-            : undefined,
-          ruleVersion: this.config.get<string>('verification.ruleVersion') ?? '1.0.0',
-          toleranceSnapshot: {
-            beforeMinutes: this.config.get<number>('verification.defaultToleranceBeforeMinutes') ?? 2,
-            afterMinutes: this.config.get<number>('verification.defaultToleranceAfterMinutes') ?? 2,
-          },
-          verifiedAt: decision.status === 'VERIFIED' ? new Date() : null,
-        },
-      });
-
-      await this.prisma.paymentScreenshot.update({
-        where: { id: screenshotId },
-        data: {
-          status: decision.status === 'VERIFIED' ? 'VERIFIED' : 'PENDING_REVIEW',
-        },
-      });
-      return { screenshotId, status: decision.status, reasonCode: decision.reasonCode };
+      engine = result.engine;
+      version = result.engineVersion;
+      const provider =
+        screenshot.submittedProvider ?? this.detectProvider(result.text);
+      if (provider !== "KBZPAY") reason = "KBZPAY_RECEIPT_REQUIRED";
+      else {
+        extraction = this.providers
+          .getExtractor(ProviderCode.KBZPAY)
+          .extract(result.text);
+        if (extraction.provider !== ProviderCode.KBZPAY) {
+          extraction = null;
+          reason = "KBZPAY_RECEIPT_REQUIRED";
+        } else if (extraction.date) {
+          try {
+            businessDate(extraction.date);
+          } catch {
+            extraction.date = null;
+            extraction.time = null;
+            reason = "OCR_FIELDS_NEED_REVIEW";
+          }
+        }
+      }
     } catch (error) {
-      await this.prisma.paymentScreenshot.update({
-        where: { id: screenshotId },
+      reason =
+        error instanceof OcrServiceError ? error.reasonCode : "OCR_FAILED";
+    }
+    try {
+      return await this.persist(
+        screenshot,
+        extraction,
+        reason,
+        batchId,
+        actorId,
+        engine,
+        version,
+      );
+    } catch (error) {
+      await this.prisma.paymentScreenshot.updateMany({
+        where: { id: screenshotId, status: "PROCESSING" },
         data: {
-          status: 'FAILED',
-          lastError: error instanceof Error ? error.message.slice(0, 500) : 'OCR failed',
+          status: "FAILED",
+          lastError: "Processing could not be saved. Retry the comparison.",
         },
       });
       throw error;
     }
   }
 
-  private async loadCandidates(
-    provider: ProviderCode,
-    businessDate: string | null,
-  ): Promise<MatchCandidate[]> {
-    if (!businessDate) return [];
-    const transactions = await this.prisma.paymentTransaction.findMany({
+  async enterDetails(id: string, dto: ReceiptDetailsDto, actorId: string) {
+    businessDate(dto.date);
+    if (Number(dto.amount) <= 0)
+      throw new BadRequestException("Amount must be greater than zero");
+    if (dto.time && !receiptTime(dto.date, dto.time))
+      throw new BadRequestException("Invalid receipt time");
+    const screenshot = await this.claim(id);
+    try {
+      return await this.persist(
+        screenshot,
+        {
+          provider: ProviderCode.KBZPAY,
+          transactionStatus: null,
+          direction: "UNKNOWN",
+          amount: Number(dto.amount).toFixed(2),
+          currency: "MMK",
+          transactionId: dto.transactionId?.trim() || null,
+          date: dto.date,
+          time: dto.time || null,
+          sender: null,
+          senderPhone: null,
+          receiver: dto.receiver || null,
+          receiverPhone: null,
+          rawText: "",
+          fieldConfidence: {},
+          overallConfidence: null,
+        },
+        null,
+        undefined,
+        actorId,
+        "manual-entry",
+        "1",
+      );
+    } catch (error) {
+      await this.prisma.paymentScreenshot.updateMany({
+        where: { id, status: "PROCESSING" },
+        data: { status: "PENDING_REVIEW" },
+      });
+      throw error;
+    }
+  }
+
+  private async claim(
+    id: string,
+    batchId?: string,
+  ): Promise<PaymentScreenshot> {
+    const screenshot = await this.prisma.paymentScreenshot.findUnique({
+      where: { id },
+    });
+    if (!screenshot) throw new NotFoundException("Screenshot was not found");
+    if (
+      screenshot.submittedProvider &&
+      screenshot.submittedProvider !== "KBZPAY"
+    )
+      throw new BadRequestException("The MVP reviews KBZPay only");
+    if (batchId) {
+      const batch = await this.prisma.verificationBatch.findUnique({
+        where: { id: batchId },
+      });
+      if (
+        !batch ||
+        !batch.providerScope.includes("KBZPAY") ||
+        batch.status !== "RUNNING"
+      ) {
+        throw new BadRequestException("A running KBZPay batch is required");
+      }
+    }
+    const claimed = await this.prisma.paymentScreenshot.updateMany({
       where: {
-        provider: provider as unknown as PrismaProvider,
-        businessDate: new Date(`${businessDate}T00:00:00.000Z`),
+        id,
+        status: {
+          in: [
+            "RECEIVED",
+            "PENDING_REVIEW",
+            "FAILED",
+            "UNMATCHED",
+            "OCR_COMPLETED",
+            "DUPLICATE",
+          ],
+        },
       },
-      orderBy: { transactionAtUtc: 'asc' },
+      data: { status: "PROCESSING", lastError: null },
     });
-    return transactions.map((transaction) => ({
-      transactionId: transaction.id,
-      provider,
-      direction: transaction.direction,
-      amount: transaction.amount.toString(),
-      currency: transaction.currency,
-      transactionAtUtc: transaction.transactionAtUtc,
-      senderName: transaction.senderName,
-      receiverName: transaction.receiverName,
-      reference: transaction.reference,
-    }));
+    if (!claimed.count)
+      throw new ConflictException(
+        "This screenshot is processing or has already been resolved",
+      );
+    return screenshot;
   }
 
-  private detectProvider(
-    submittedProvider: PrismaProvider | null,
-    text: string,
-  ): ProviderCode | null {
-    if (submittedProvider) return submittedProvider as unknown as ProviderCode;
-    if (/AYA\s*PAY|E-RECEIPT/i.test(text)) return ProviderCode.AYAPAY;
-    if (/receipt\s+by\s+wave|\bWAVE\b/i.test(text)) return ProviderCode.WAVEPAY;
-    if (/KBZPAY|KBZ\s*PAY/i.test(text)) return ProviderCode.KBZPAY;
-    return null;
-  }
-
-  private parseReceiptDateTime(date: string | null, time: string | null): Date | null {
-    if (!date || !time) return null;
-    const dateMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const timeMatch = time.match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
-    if (!dateMatch || !timeMatch) return null;
-    let hour = Number(timeMatch[1]);
-    const minute = Number(timeMatch[2]);
-    const meridiem = timeMatch[3].toUpperCase();
-    if (meridiem === 'PM' && hour !== 12) hour += 12;
-    if (meridiem === 'AM' && hour === 12) hour = 0;
-    const localMillis = Date.UTC(
-      Number(dateMatch[1]),
-      Number(dateMatch[2]) - 1,
-      Number(dateMatch[3]),
-      hour,
-      minute,
-    );
-    return new Date(localMillis - 6.5 * 60 * 60 * 1000);
-  }
-
-  private async failToReview(
-    screenshotId: string,
-    batchId: string | undefined,
-    reasonCode: string,
-    ocrResult: OcrEngineResult,
-    provider: ProviderCode | null,
+  private async persist(
+    screenshot: PaymentScreenshot,
+    extraction: OcrExtraction | null,
+    fallbackReason: string | null,
+    requestedBatchId?: string,
+    actorId?: string,
+    engine = "google-vision",
+    engineVersion = "v1",
   ) {
-    await this.prisma.paymentScreenshot.update({
-      where: { id: screenshotId },
-      data: { status: 'PENDING_REVIEW', detectedProvider: provider as unknown as PrismaProvider },
-    });
-    if (batchId) {
-      await this.prisma.verificationResult.create({
+    const dateText =
+      extraction?.date ||
+      screenshot.businessDate?.toISOString().slice(0, 10) ||
+      new Date(screenshot.receivedAt.getTime() + 23400000)
+        .toISOString()
+        .slice(0, 10);
+    const date = businessDate(dateText);
+    const beforeMinutes =
+      this.config.get<number>("verification.defaultToleranceBeforeMinutes") ??
+      2;
+    const afterMinutes =
+      this.config.get<number>("verification.defaultToleranceAfterMinutes") ?? 2;
+    return this.prisma.$transaction(async (tx) => {
+      // Serialize comparison writes with import deletion so checked payments are retained.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+      await tx.$queryRaw`SELECT id FROM "PaymentScreenshot" WHERE id = ${screenshot.id}::uuid FOR UPDATE`;
+      const current = await tx.paymentScreenshot.findUniqueOrThrow({
+        where: { id: screenshot.id },
+      });
+      if (current.status !== "PROCESSING")
+        throw new ConflictException("Screenshot is no longer processing");
+      const history = await tx.paymentTransaction.findMany({
+        where: {
+          provider: "KBZPAY",
+          businessDate: date,
+          direction: "INCOMING",
+        },
+        include: { usedTransaction: true },
+        take: 5001,
+      });
+      const candidates: MatchCandidate[] = history.map((t) => ({
+        transactionId: t.id,
+        externalTransactionId: t.externalTransactionId,
+        provider: ProviderCode.KBZPAY,
+        direction: t.direction,
+        amount: t.amount.toFixed(2),
+        currency: t.currency,
+        transactionAtUtc: t.transactionAtUtc,
+        reference: t.reference,
+      }));
+      const decision = extraction
+        ? this.matching.decide(
+            {
+              provider: ProviderCode.KBZPAY,
+              direction: "INCOMING",
+              transactionId: extraction.transactionId,
+              amount: extraction.amount,
+              currency: extraction.currency,
+              transactionAtUtc: receiptTime(extraction.date, extraction.time),
+            },
+            candidates,
+            {
+              beforeMinutes,
+              afterMinutes,
+              allowLevelThreeAutoVerify: false,
+              allowOutgoingAutoVerify: false,
+            },
+          )
+        : null;
+      const proposed = decision?.candidate;
+      let reasonCode = fallbackReason || decision?.reasonCode || "NO_MATCH";
+      let status: ScreenshotStatus =
+        fallbackReason || !extraction?.amount || !extraction?.date
+          ? "FAILED"
+          : "UNMATCHED";
+      if (history.length > 5000) {
+        status = "FAILED";
+        reasonCode = "HISTORY_LIMIT_EXCEEDED";
+      }
+      if (!fallbackReason && (!extraction?.amount || !extraction?.date))
+        reasonCode = "OCR_FIELDS_INCOMPLETE";
+      if (
+        history.length <= 5000 &&
+        !fallbackReason &&
+        extraction?.date &&
+        extraction.amount &&
+        proposed &&
+        decision?.status === "VERIFIED"
+      ) {
+        // The unique database constraints arbitrate simultaneous receipts, including manual clients.
+        const reserved = await tx.usedTransaction.createMany({
+          data: [
+            {
+              provider: "KBZPAY",
+              transactionId: proposed.transactionId,
+              screenshotId: screenshot.id,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        status = reserved.count ? "VERIFIED" : "DUPLICATE";
+        if (!reserved.count) reasonCode = "TRANSACTION_ALREADY_USED";
+      }
+      const previous = await tx.verificationResult.findFirst({
+        where: { screenshotId: screenshot.id },
+        orderBy: { createdAt: "desc" },
+      });
+      let batchId = requestedBatchId || previous?.batchId;
+      if (!batchId) {
+        const batch = await tx.verificationBatch.create({
+          data: {
+            businessDate: date,
+            status: "COMPLETED",
+            triggerType: "MANUAL",
+            providerScope: ["KBZPAY"],
+            createdById: actorId,
+            totalScreenshots: 1,
+            processed: 1,
+            matched: status === "VERIFIED" ? 1 : 0,
+            duplicate: status === "DUPLICATE" ? 1 : 0,
+            unmatched: status === "UNMATCHED" ? 1 : 0,
+            failed: status === "FAILED" ? 1 : 0,
+            startedAt: new Date(),
+            completedAt: new Date(),
+            configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
+          },
+        });
+        batchId = batch.id;
+      }
+      if (extraction)
+        await tx.ocrResult.create({
+          data: {
+            screenshotId: screenshot.id,
+            provider: "KBZPAY",
+            ocrEngine: engine,
+            ocrEngineVersion: engineVersion,
+            rawText: extraction.rawText,
+            extractedAmount: extraction.amount,
+            extractedCurrency: extraction.currency,
+            extractedTransactionId: extraction.transactionId,
+            extractedDate: extraction.date
+              ? businessDate(extraction.date)
+              : null,
+            extractedTime: extraction.time,
+            extractedSender: extraction.sender,
+            extractedReceiver: extraction.receiver,
+            extractedSenderPhone: extraction.senderPhone,
+            extractedReceiverPhone: extraction.receiverPhone,
+            fieldConfidenceJson: extraction.fieldConfidence,
+            overallConfidence: extraction.overallConfidence,
+            status: "COMPLETED",
+          },
+        });
+      const data = {
+        provider: "KBZPAY" as Provider,
+        status:
+          status === "VERIFIED"
+            ? ("APPROVED" as const)
+            : status === "DUPLICATE"
+              ? ("MARKED_DUPLICATE" as const)
+              : ("OPEN" as const),
+        transactionId: proposed?.transactionId || null,
+        matchLevel: decision?.matchLevel,
+        matchScore: decision?.matchScore,
+        reasonCode,
+        ruleVersion: "automatic-comparison-1",
+        verifiedAt: status === "VERIFIED" ? new Date() : null,
+        toleranceSnapshot: { beforeMinutes, afterMinutes },
+        candidateSnapshot: proposed
+          ? (JSON.parse(JSON.stringify(proposed)) as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+      };
+      await tx.verificationResult.upsert({
+        where: {
+          batchId_screenshotId: { batchId, screenshotId: screenshot.id },
+        },
+        create: { ...data, batchId, screenshotId: screenshot.id },
+        update: data,
+      });
+      await tx.paymentScreenshot.update({
+        where: { id: screenshot.id },
         data: {
-          batchId,
-          screenshotId,
-          provider: provider as unknown as PrismaProvider,
-          status: 'OPEN',
-          reasonCode,
-          candidateSnapshot: { ocrTextAvailable: Boolean(ocrResult.text) },
-          ruleVersion: this.config.get<string>('verification.ruleVersion') ?? '1.0.0',
+          status,
+          detectedProvider: extraction?.provider || current.detectedProvider,
+          businessDate: date,
+          lastError: status === "FAILED" ? reasonCode : null,
         },
       });
-    }
-    return { screenshotId, status: 'PENDING_REVIEW', reasonCode };
-  }
-
-  private async markPendingReview(
-    screenshotId: string,
-    batchId: string | undefined,
-    ocrResultId: string,
-    reasonCode: string,
-  ) {
-    await this.prisma.paymentScreenshot.update({
-      where: { id: screenshotId },
-      data: { status: 'PENDING_REVIEW' },
-    });
-    if (batchId) {
-      await this.prisma.verificationResult.create({
+      const counts = await tx.paymentScreenshot.groupBy({
+        by: ["status"],
+        where: { verificationResults: { some: { batchId } } },
+        _count: true,
+      });
+      const totals = Object.fromEntries(
+        counts.map((item) => [item.status, item._count]),
+      );
+      await tx.verificationBatch.update({
+        where: { id: batchId },
         data: {
-          batchId,
-          screenshotId,
-          status: 'OPEN',
-          reasonCode,
-          candidateSnapshot: { ocrResultId },
-          ruleVersion: this.config.get<string>('verification.ruleVersion') ?? '1.0.0',
+          matched: totals.VERIFIED || 0,
+          duplicate: totals.DUPLICATE || 0,
+          unmatched: totals.UNMATCHED || 0,
+          failed: totals.FAILED || 0,
+          pendingReview: totals.PENDING_REVIEW || 0,
+          configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
         },
       });
-    }
-    return { screenshotId, status: 'PENDING_REVIEW', reasonCode };
+      await tx.auditLog.create({
+        data: {
+          actorUserId: actorId,
+          action: `AUTO_${status}`,
+          entityType: "PaymentScreenshot",
+          entityId: screenshot.id,
+          newValueJson: {
+            reasonCode,
+            proposedTransactionId: proposed?.transactionId || null,
+            mode: "AUTOMATIC_COMPARISON",
+          },
+        },
+      });
+      return {
+        screenshotId: screenshot.id,
+        status,
+        businessDate: dateText,
+        reasonCode,
+        candidateId: proposed?.transactionId || null,
+      };
+    });
+  }
+
+  private detectProvider(text: string): Provider | null {
+    return /KBZ\s*PAY/i.test(text) ? "KBZPAY" : null;
   }
 }

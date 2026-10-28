@@ -1,5 +1,9 @@
-import { MatchCandidate, MatchDecision, OcrMatchInput } from './verification.dto';
-import { MatchLevel } from '../common/enums/domain.enums';
+import {
+  MatchCandidate,
+  MatchDecision,
+  OcrMatchInput,
+} from "./verification.dto";
+import { MatchLevel } from "../common/enums/domain.enums";
 
 export interface MatchingConfig {
   beforeMinutes: number;
@@ -15,15 +19,15 @@ export class MatchingEngine {
     config: MatchingConfig,
   ): MatchDecision {
     if (!input.provider) {
-      return this.review('PROVIDER_NOT_DETECTED');
+      return this.review("PROVIDER_NOT_DETECTED");
     }
 
-    if (input.direction === 'UNKNOWN') {
-      return this.review('DIRECTION_UNKNOWN');
+    if (input.direction === "UNKNOWN") {
+      return this.review("DIRECTION_UNKNOWN");
     }
 
-    if (input.direction === 'OUTGOING' && !config.allowOutgoingAutoVerify) {
-      return this.review('OUTGOING_AUTO_VERIFY_DISABLED');
+    if (input.direction === "OUTGOING" && !config.allowOutgoingAutoVerify) {
+      return this.review("OUTGOING_AUTO_VERIFY_DISABLED");
     }
 
     const providerCandidates = candidates.filter(
@@ -33,13 +37,13 @@ export class MatchingEngine {
     );
 
     if (providerCandidates.length === 0) {
-      return this.unmatched('NO_PROVIDER_SCOPED_CANDIDATE');
+      return this.unmatched("NO_PROVIDER_SCOPED_CANDIDATE");
     }
 
     if (input.transactionId) {
       const exact = providerCandidates.filter(
         (candidate) =>
-          this.normalizeId(candidate.transactionId) ===
+          this.normalizeId(candidate.externalTransactionId ?? "") ===
           this.normalizeId(input.transactionId as string),
       );
 
@@ -48,17 +52,24 @@ export class MatchingEngine {
           exact[0],
           MatchLevel.EXACT_TRANSACTION_ID,
           1,
-          'EXACT_TRANSACTION_ID',
+          "EXACT_TRANSACTION_ID",
         );
       }
 
       if (exact.length > 1) {
-        return this.review('MULTIPLE_EXACT_TRANSACTION_ID_CANDIDATES');
+        return this.review("MULTIPLE_EXACT_TRANSACTION_ID_CANDIDATES");
       }
+
+      // A supplied ID that disagrees with history must never fall back to amount/time.
+      return this.review(
+        exact.length
+          ? "TRANSACTION_ID_AMOUNT_MISMATCH"
+          : "TRANSACTION_ID_NOT_FOUND",
+      );
     }
 
     if (!input.amount || !input.transactionAtUtc) {
-      return this.review('INSUFFICIENT_FIELDS_FOR_LEVEL_TWO');
+      return this.review("INSUFFICIENT_FIELDS_FOR_LEVEL_TWO");
     }
 
     const levelTwo = providerCandidates.filter((candidate) => {
@@ -78,22 +89,25 @@ export class MatchingEngine {
         levelTwo[0],
         MatchLevel.AMOUNT_DATE_TIME,
         0.95,
-        'AMOUNT_DATE_TIME_UNIQUE_CANDIDATE',
+        "AMOUNT_DATE_TIME_UNIQUE_CANDIDATE",
       );
     }
 
     if (levelTwo.length > 1) {
-      return this.review('MULTIPLE_LEVEL_TWO_CANDIDATES');
+      return this.review("MULTIPLE_LEVEL_TWO_CANDIDATES");
     }
 
-    return this.review('NO_LEVEL_TWO_CANDIDATE');
+    return this.review("NO_LEVEL_TWO_CANDIDATE");
   }
 
   private normalizeId(value: string): string {
-    return value.trim().toUpperCase().replace(/[\s-]/g, '');
+    return value.trim().toUpperCase().replace(/[\s-]/g, "");
   }
 
-  private amountMatches(input: OcrMatchInput, candidate: MatchCandidate): boolean {
+  private amountMatches(
+    input: OcrMatchInput,
+    candidate: MatchCandidate,
+  ): boolean {
     if (!input.amount || input.currency !== candidate.currency) {
       return false;
     }
@@ -110,8 +124,11 @@ export class MatchingEngine {
     beforeMinutes: number,
     afterMinutes: number,
   ): boolean {
-    const differenceMinutes = (candidateTime.getTime() - inputTime.getTime()) / 60_000;
-    return differenceMinutes >= -beforeMinutes && differenceMinutes <= afterMinutes;
+    const differenceMinutes =
+      (candidateTime.getTime() - inputTime.getTime()) / 60_000;
+    return (
+      differenceMinutes >= -beforeMinutes && differenceMinutes <= afterMinutes
+    );
   }
 
   private verified(
@@ -120,12 +137,18 @@ export class MatchingEngine {
     matchScore: number,
     reasonCode: string,
   ): MatchDecision {
-    return { status: 'VERIFIED', matchLevel, matchScore, candidate, reasonCode };
+    return {
+      status: "VERIFIED",
+      matchLevel,
+      matchScore,
+      candidate,
+      reasonCode,
+    };
   }
 
   private review(reasonCode: string): MatchDecision {
     return {
-      status: 'PENDING_REVIEW',
+      status: "PENDING_REVIEW",
       matchLevel: null,
       matchScore: 0,
       candidate: null,
@@ -135,7 +158,7 @@ export class MatchingEngine {
 
   private unmatched(reasonCode: string): MatchDecision {
     return {
-      status: 'UNMATCHED',
+      status: "UNMATCHED",
       matchLevel: null,
       matchScore: 0,
       candidate: null,

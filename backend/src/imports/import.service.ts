@@ -1,14 +1,23 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { createHash } from 'node:crypto';
-import { PrismaService } from '../database.prisma';
-import { S3Storage } from '../storage/s3.storage';
-import { CreateImportDto } from './import.dto';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
+import { PrismaService } from "../database.prisma";
+import { S3Storage } from "../storage/s3.storage";
+import { ProviderRegistry } from "../providers/provider-registry";
+import { ProviderCode } from "../common/enums/domain.enums";
+import { businessDate } from "../common/business-date";
+import { CreateImportDto } from "./import.dto";
 
 @Injectable()
 export class ImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: S3Storage,
+    private readonly providers: ProviderRegistry,
   ) {}
 
   async stageUpload(
@@ -16,53 +25,287 @@ export class ImportService {
     file: Express.Multer.File | undefined,
     uploadedById: string,
   ) {
-    if (!uploadedById) {
-      throw new BadRequestException('Authenticated uploader is required');
+    if (dto.provider !== ProviderCode.KBZPAY)
+      throw new BadRequestException(
+        "The MVP imports KBZPay Excel history only",
+      );
+    const date = businessDate(dto.businessDate);
+    if (!uploadedById || !file?.buffer?.length)
+      throw new BadRequestException(
+        "An authenticated uploader and export file are required",
+      );
+    if (
+      !/\.xlsx$/i.test(file.originalname) ||
+      file.buffer.subarray(0, 2).toString() !== "PK"
+    ) {
+      throw new BadRequestException("Upload a KBZPay .xlsx export");
     }
-    if (!file?.buffer?.length) {
-      throw new BadRequestException('A non-empty export file is required');
-    }
-
-    const fileHash = createHash('sha256').update(file.buffer).digest('hex');
-    const duplicate = await this.prisma.paymentImport.findFirst({
-      where: { provider: dto.provider as never, fileHash },
-      select: { id: true, status: true },
+    const fileHash = createHash("sha256").update(file.buffer).digest("hex");
+    const duplicate = await this.prisma.paymentImport.findUnique({
+      where: { provider_fileHash: { provider: dto.provider, fileHash } },
     });
-    if (duplicate) {
-      return { importId: duplicate.id, status: duplicate.status, duplicate: true };
+    const parser = this.providers.getParser(dto.provider);
+    const parserVersion = `${parser.version}:${dto.scope || "day"}`;
+    if (duplicate?.parserVersion === parserVersion)
+      return this.summary(duplicate, true);
+    let parsed;
+    try {
+      parsed = await parser.parse(
+        file.buffer,
+        file.originalname,
+        dto.scope === "statement" ? undefined : dto.businessDate,
+      );
+    } catch {
+      throw new BadRequestException("The Excel workbook could not be read");
     }
-
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const storageKey = `imports/${dto.provider}/${dto.businessDate}/${fileHash}-${safeName}`;
-    await this.storage.putObject({
-      key: storageKey,
-      body: file.buffer,
-      contentType: file.mimetype || 'application/octet-stream',
-      metadata: { provider: dto.provider, businessDate: dto.businessDate },
-    });
-
-    const paymentImport = await this.prisma.paymentImport.create({
-      data: {
-        provider: dto.provider as never,
-        businessDate: this.parseDateOnly(dto.businessDate),
-        fileName: file.originalname,
-        storageKey,
-        fileHash,
-        parserVersion: 'pending',
-        status: 'UPLOADED',
-        uploadedById,
+    if (parsed.totalRows > 5000)
+      throw new BadRequestException("Import at most 5,000 rows per file");
+    if (!parsed.transactions.length) {
+      throw new BadRequestException({
+        message:
+          "No valid transactions found. Check the export format and business date.",
+        errors: parsed.errors.slice(0, 20),
+      });
+    }
+    const references = new Map<string, string>();
+    for (const item of parsed.transactions) {
+      if (!item.externalTransactionId) continue;
+      const signature = [
+        item.amount,
+        item.direction,
+        item.transactionAtUtc.toISOString(),
+      ].join("|");
+      const previous = references.get(item.externalTransactionId);
+      if (previous && previous !== signature)
+        throw new BadRequestException(
+          "Conflicting rows share a transaction ID; import cancelled",
+        );
+      references.set(item.externalTransactionId, signature);
+    }
+    const storageKey = `imports/KBZPAY/${dto.businessDate}/${fileHash}.xlsx`;
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Serialize provider imports, including overlapping files.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+        await this.storage.putObject({
+          key: storageKey,
+          body: file.buffer,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+        const existingFile = await tx.paymentImport.findUnique({
+          where: { provider_fileHash: { provider: dto.provider, fileHash } },
+        });
+        if (existingFile?.parserVersion === parserVersion)
+          return this.summary(existingFile, true);
+        const dates = [
+          ...new Set(parsed.transactions.map((item) => item.businessDate)),
+        ].map(businessDate);
+        const history = await tx.paymentTransaction.findMany({
+          where: {
+            provider: dto.provider,
+            OR: [
+              { businessDate: { in: dates } },
+              { externalTransactionId: { in: [...references.keys()] } },
+            ],
+          },
+        });
+        const byId = new Map(
+          history
+            .filter((t) => t.externalTransactionId)
+            .map((t) => [t.externalTransactionId!, t]),
+        );
+        const fingerprints = new Set(history.map((t) => t.fingerprint));
+        const record =
+          existingFile ||
+          (await tx.paymentImport.create({
+            data: {
+              provider: dto.provider,
+              businessDate: date,
+              fileName: file.originalname.slice(0, 255),
+              storageKey,
+              fileHash,
+              parserVersion,
+              uploadedById,
+              totalRows: parsed.totalRows,
+              status: "PARSING",
+            },
+          }));
+        const rows: Prisma.PaymentTransactionCreateManyInput[] = [];
+        let inserted = 0;
+        let skipped = 0;
+        const seenIds = new Set<string>();
+        for (const item of parsed.transactions) {
+          if (item.externalTransactionId) {
+            const previous = byId.get(item.externalTransactionId);
+            if (
+              previous &&
+              (previous.amount.toFixed(2) !== item.amount ||
+                previous.direction !== item.direction ||
+                previous.transactionAtUtc.getTime() !==
+                  item.transactionAtUtc.getTime())
+            ) {
+              throw new BadRequestException(
+                "An existing transaction ID has conflicting amount, direction or time; import cancelled",
+              );
+            }
+            if (previous || seenIds.has(item.externalTransactionId)) {
+              skipped++;
+              continue;
+            }
+          }
+          if (fingerprints.has(item.fingerprint)) {
+            skipped++;
+            continue;
+          }
+          const { rawRow, businessDate: transactionDate, ...fields } = item;
+          rows.push({
+            ...fields,
+            businessDate: businessDate(transactionDate),
+            sourceImportId: record.id,
+            rawRowJson: JSON.parse(
+              JSON.stringify(rawRow),
+            ) as Prisma.InputJsonValue,
+          });
+          fingerprints.add(item.fingerprint);
+          if (item.externalTransactionId)
+            seenIds.add(item.externalTransactionId);
+          inserted++;
+        }
+        if (rows.length) await tx.paymentTransaction.createMany({ data: rows });
+        if (existingFile)
+          await tx.paymentImportError.deleteMany({
+            where: { importId: record.id },
+          });
+        if (parsed.errors.length)
+          await tx.paymentImportError.createMany({
+            data: parsed.errors.map((error) => ({
+              importId: record.id,
+              sourceRowNumber: error.sourceRowNumber,
+              errorCode: error.errorCode,
+              errorMessage: error.errorMessage,
+              rawRowReference: error.rawRow
+                ? JSON.parse(JSON.stringify(error.rawRow))
+                : undefined,
+            })),
+          });
+        const completed = await tx.paymentImport.update({
+          where: { id: record.id },
+          data: {
+            parsedRows: (existingFile?.parsedRows || 0) + inserted,
+            totalRows: parsed.totalRows,
+            parserVersion,
+            errorRows: parsed.errors.length,
+            status: parsed.errors.length
+              ? "COMPLETED_WITH_ERRORS"
+              : "COMPLETED",
+            completedAt: new Date(),
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: uploadedById,
+            action: "IMPORT_COMPLETED",
+            entityType: "PaymentImport",
+            entityId: record.id,
+            newValueJson: { inserted, skipped, errors: parsed.errors.length },
+          },
+        });
+        return {
+          ...this.summary(completed, false),
+          parsedRows: inserted,
+          skippedRows: skipped,
+        };
       },
-      select: { id: true, status: true },
-    });
-
-    return { importId: paymentImport.id, status: paymentImport.status, duplicate: false };
+      { timeout: 60000 },
+    );
   }
 
-  private parseDateOnly(value: string): Date {
-    const date = new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
-    if (Number.isNaN(date.getTime())) {
-      throw new BadRequestException(`Invalid business date: ${value}`);
-    }
-    return date;
+  private summary(
+    record: {
+      id: string;
+      status: string;
+      parsedRows: number;
+      errorRows: number;
+    },
+    duplicate: boolean,
+  ) {
+    return {
+      importId: record.id,
+      status: record.status,
+      parsedRows: record.parsedRows,
+      errorRows: record.errorRows,
+      duplicate,
+    };
+  }
+
+  async remove(id: string, actorId: string) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+        const record = await tx.paymentImport.findUnique({ where: { id } });
+        if (!record)
+          return {
+            success: true,
+            deleted: false,
+            deletedTransactions: 0,
+            retainedTransactions: 0,
+          };
+        if (
+          ["UPLOADED", "PARSING"].includes(record.status) ||
+          (await tx.paymentScreenshot.findFirst({
+            where: { status: "PROCESSING" },
+            select: { id: true },
+          }))
+        )
+          throw new ConflictException({
+            code: "UPLOAD_BUSY",
+            message:
+              "Uploads are being processed. Try again when processing finishes.",
+          });
+        const deleted = await tx.paymentTransaction.deleteMany({
+          where: {
+            sourceImportId: id,
+            usedTransaction: null,
+            verificationResults: { none: {} },
+          },
+        });
+        const retainedTransactions = await tx.paymentTransaction.count({
+          where: { sourceImportId: id },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: actorId,
+            action: "IMPORT_DELETED",
+            entityType: "PaymentImport",
+            entityId: id,
+            oldValueJson: {
+              fileName: record.fileName,
+              fileHash: record.fileHash,
+              status: record.status,
+            },
+            newValueJson: {
+              deletedTransactions: deleted.count,
+              retainedTransactions,
+            },
+          },
+        });
+        // Errors cascade; already referenced/used transactions survive with no source upload.
+        await tx.paymentImport.delete({ where: { id } });
+        if (
+          !(await tx.paymentImport.count({
+            where: { storageKey: record.storageKey },
+          }))
+        )
+          await this.storage.deleteObject(record.storageKey);
+        return {
+          success: true,
+          deleted: true,
+          deletedTransactions: deleted.count,
+          retainedTransactions,
+        };
+      },
+      { timeout: 15000 },
+    );
   }
 }

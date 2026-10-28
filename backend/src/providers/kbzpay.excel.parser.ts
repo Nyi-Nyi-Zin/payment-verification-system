@@ -1,16 +1,16 @@
-import { createHash } from 'node:crypto';
-import * as XLSX from 'xlsx';
-import { ProviderCode } from '../common/enums/domain.enums';
+import { createHash } from "node:crypto";
+import * as XLSX from "xlsx";
+import { ProviderCode } from "../common/enums/domain.enums";
 import {
   CanonicalTransaction,
   ParseError,
   ParserResult,
   ProviderImportParser,
   TransactionDirection,
-} from './provider.contracts';
+} from "./provider.contracts";
 
-const TIMEZONE = 'Asia/Yangon';
-const PARSER_VERSION = 'kbzpay-xlsx-1.0.0';
+const TIMEZONE = "Asia/Yangon";
+const PARSER_VERSION = "kbzpay-xlsx-2.0.1";
 
 export class KbzpayExcelParser implements ProviderImportParser {
   readonly provider = ProviderCode.KBZPAY;
@@ -19,9 +19,13 @@ export class KbzpayExcelParser implements ProviderImportParser {
   async parse(
     input: Buffer,
     _fileName: string,
-    businessDate: string,
+    businessDate?: string,
   ): Promise<ParserResult> {
-    const workbook = XLSX.read(input, { type: 'buffer', cellDates: false });
+    const workbook = XLSX.read(input, {
+      type: "buffer",
+      cellDates: false,
+      sheetRows: 5010,
+    });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     if (!sheet) {
       return {
@@ -29,7 +33,7 @@ export class KbzpayExcelParser implements ProviderImportParser {
         parserVersion: this.version,
         totalRows: 0,
         transactions: [],
-        errors: [this.error(0, 'EMPTY_WORKBOOK', 'No worksheet was found')],
+        errors: [this.error(0, "EMPTY_WORKBOOK", "No worksheet was found")],
       };
     }
 
@@ -48,8 +52,8 @@ export class KbzpayExcelParser implements ProviderImportParser {
         errors: [
           this.error(
             0,
-            'HEADER_NOT_FOUND',
-            'KBZPay transaction header row was not found',
+            "HEADER_NOT_FOUND",
+            "KBZPay transaction header row was not found",
           ),
         ],
       };
@@ -61,24 +65,47 @@ export class KbzpayExcelParser implements ProviderImportParser {
 
     for (let index = headerIndex + 1; index < rows.length; index += 1) {
       const row = rows[index];
-      if (row.every((value) => value === null || value === '')) {
+      if (row.every((value) => value === null || value === "")) {
         continue;
       }
 
       const record = this.toRecord(headers, row);
-      const description = this.text(record['detaileddescription']);
-      if (description.toLowerCase().includes('opening balance')) {
+      const description = this.text(record["detaileddescription"]);
+      if (description.toLowerCase().includes("opening balance")) {
         continue;
       }
+      const firstCell = this.text(row[0]);
+      if (
+        !this.text(record.tmrefno) &&
+        (/^(?:Thank you for using KBZPay|Customers are responsible for verifying|This is a auto-generated document)/i.test(
+          firstCell,
+        ) ||
+          /^(?:closing balance|total|credit total|debit total)$/i.test(
+            description,
+          ) ||
+          (!firstCell &&
+            !description &&
+            !this.text(record.credit) &&
+            !this.text(record.debit)))
+      )
+        continue;
 
       try {
+        // KBZPay posts QuickPay service charges under the principal payment's
+        // reference and timestamp. A fee is not a second claimable payment.
+        if (
+          /^QuickPay Fee Charge(?:\s+from\b|$)/i.test(description) &&
+          this.parseAmount(record.credit) === 0 &&
+          this.parseAmount(record.debit) < 0
+        )
+          continue;
         transactions.push(this.toTransaction(record, businessDate));
       } catch (error) {
         errors.push(
           this.error(
             index + 1,
-            'INVALID_TRANSACTION_ROW',
-            error instanceof Error ? error.message : 'Invalid transaction row',
+            "INVALID_TRANSACTION_ROW",
+            error instanceof Error ? error.message : "Invalid transaction row",
             record,
           ),
         );
@@ -98,8 +125,8 @@ export class KbzpayExcelParser implements ProviderImportParser {
     return rows.findIndex((row) =>
       row.some(
         (value) =>
-          this.normalize(value).includes('transactiondate') &&
-          row.some((header) => this.normalize(header).includes('tmrefno')),
+          this.normalize(value).includes("transactiondate") &&
+          row.some((header) => this.normalize(header).includes("tmrefno")),
       ),
     );
   }
@@ -113,30 +140,40 @@ export class KbzpayExcelParser implements ProviderImportParser {
 
   private toTransaction(
     record: Record<string, unknown>,
-    businessDate: string,
+    businessDate?: string,
   ): CanonicalTransaction {
     const parsedDateTime = this.parseLocalDateTime(
-      this.text(record['transactiondate&time']),
+      this.text(record["transactiondate&time"]),
     );
     const transactionAtLocal = parsedDateTime.local;
     const transactionAtUtc = parsedDateTime.utc;
+    const transactionDate = transactionAtLocal.toISOString().slice(0, 10);
+    if (businessDate && transactionDate !== businessDate) {
+      throw new Error(
+        "Transaction date does not match the selected business date",
+      );
+    }
     const credit = this.parseAmount(record.credit);
     const debit = this.parseAmount(record.debit);
     const direction: TransactionDirection =
       credit > 0 && debit === 0
-        ? 'INCOMING'
+        ? "INCOMING"
         : debit < 0 && credit === 0
-          ? 'OUTGOING'
-          : 'UNKNOWN';
-    const amount = direction === 'INCOMING' ? credit : Math.abs(debit);
-    if (amount <= 0 || direction === 'UNKNOWN') {
-      throw new Error('Credit/debit values do not identify a single transaction direction');
+          ? "OUTGOING"
+          : "UNKNOWN";
+    const amount = direction === "INCOMING" ? credit : Math.abs(debit);
+    if (amount <= 0 || direction === "UNKNOWN") {
+      throw new Error(
+        "Credit/debit values do not identify a single transaction direction",
+      );
     }
 
-    const externalTransactionId = this.text(record.tmrefno);
-    const description = this.text(record['detaileddescription']);
+    const externalTransactionId = this.text(record.tmrefno)
+      .toUpperCase()
+      .replace(/[\s-]/g, "");
+    const description = this.text(record["detaileddescription"]);
     const reference = this.text(record.notes);
-    const fingerprint = createHash('sha256')
+    const fingerprint = createHash("sha256")
       .update(
         [
           this.provider,
@@ -144,17 +181,17 @@ export class KbzpayExcelParser implements ProviderImportParser {
           amount.toFixed(2),
           transactionAtUtc.toISOString(),
           direction,
-        ].join('|'),
+        ].join("|"),
       )
-      .digest('hex');
+      .digest("hex");
 
     return {
       provider: this.provider,
       externalTransactionId: externalTransactionId || null,
-      transactionStatus: 'COMPLETED',
+      transactionStatus: "COMPLETED",
       direction,
       amount: amount.toFixed(2),
-      currency: 'MMK',
+      currency: "MMK",
       creditAmount: credit.toFixed(2),
       debitAmount: debit.toFixed(2),
       runningBalance: this.parseAmount(record.balance).toFixed(2),
@@ -162,7 +199,7 @@ export class KbzpayExcelParser implements ProviderImportParser {
 
       transactionAtLocal,
       localTimezone: TIMEZONE,
-      businessDate,
+      businessDate: transactionDate,
       senderName: null,
       senderPhone: this.extractPhone(description),
       receiverName: null,
@@ -175,7 +212,9 @@ export class KbzpayExcelParser implements ProviderImportParser {
   }
 
   private parseLocalDateTime(value: string): { local: Date; utc: Date } {
-    const match = value.match(/^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+    const match = value.match(
+      /^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/,
+    );
     if (!match) {
       throw new Error(`Unsupported KBZPay date/time: ${value}`);
     }
@@ -188,6 +227,10 @@ export class KbzpayExcelParser implements ProviderImportParser {
       Number(minute),
       Number(second),
     );
+    const expected = `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
+    if (new Date(localWallClockMillis).toISOString() !== expected) {
+      throw new Error(`Invalid KBZPay date/time: ${value}`);
+    }
     return {
       local: new Date(localWallClockMillis),
       utc: new Date(localWallClockMillis - 6.5 * 60 * 60 * 1000),
@@ -195,11 +238,14 @@ export class KbzpayExcelParser implements ProviderImportParser {
   }
 
   private parseAmount(value: unknown): number {
-    const normalized = this.text(value).replace(/,/g, '');
+    const normalized = this.text(value).replace(/,/g, "");
     if (!normalized) {
       return 0;
     }
-    const amount = Number.parseFloat(normalized);
+    if (!/^-?\d+(?:\.\d{1,2})?$/.test(normalized)) {
+      throw new Error(`Unsupported amount: ${normalized}`);
+    }
+    const amount = Number(normalized);
     if (!Number.isFinite(amount)) {
       throw new Error(`Unsupported amount: ${normalized}`);
     }
@@ -212,11 +258,13 @@ export class KbzpayExcelParser implements ProviderImportParser {
   }
 
   private text(value: unknown): string {
-    return String(value ?? '').trim();
+    return String(value ?? "").trim();
   }
 
   private normalize(value: unknown): string {
-    return this.text(value).toLowerCase().replace(/[\s_:-]/g, '');
+    return this.text(value)
+      .toLowerCase()
+      .replace(/[\s_:-]/g, "");
   }
 
   private error(

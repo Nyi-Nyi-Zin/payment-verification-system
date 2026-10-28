@@ -1,26 +1,11 @@
-import { ValidationPipe, VersioningType } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { NestFactory } from "@nestjs/core";
+import { NestExpressApplication } from "@nestjs/platform-express";
+import { AppModule } from "./app.module";
+import { configureApp } from "./configure-app";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { cors: true });
-
-  app.enableVersioning({
-    type: VersioningType.URI,
-    defaultVersion: '1',
-  });
-  app.setGlobalPrefix('api');
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-  app.enableShutdownHooks();
-
-  const port = Number.parseInt(process.env.PORT ?? '3000', 10);
-  await app.listen(port);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  configureApp(app);
+  await app.listen(Number.parseInt(process.env.PORT ?? "3000", 10));
 }
-
 void bootstrap();

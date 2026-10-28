@@ -8,9 +8,9 @@ import {
   IsString,
   Max,
   Min,
-} from 'class-validator';
-import { ProviderCode, TriggerType } from '../common/enums/domain.enums';
-import { TransactionDirection } from '../providers/provider.contracts';
+} from "class-validator";
+import { ProviderCode, TriggerType } from "../common/enums/domain.enums";
+import { TransactionDirection } from "../providers/provider.contracts";
 
 export class StartVerificationDto {
   @IsDateString()
@@ -43,6 +43,7 @@ export class ToleranceConfigDto {
 
 export interface MatchCandidate {
   transactionId: string;
+  externalTransactionId?: string | null;
   provider: ProviderCode;
   direction: TransactionDirection;
   amount: string;
@@ -67,14 +68,14 @@ export interface OcrMatchInput {
 
 export type MatchDecision =
   | {
-      status: 'VERIFIED';
+      status: "VERIFIED";
       matchLevel: 1 | 2 | 3;
       matchScore: number;
       candidate: MatchCandidate;
       reasonCode: string;
     }
   | {
-      status: 'PENDING_REVIEW' | 'UNMATCHED';
+      status: "PENDING_REVIEW" | "UNMATCHED";
       matchLevel: null;
       matchScore: number;
       candidate: null;

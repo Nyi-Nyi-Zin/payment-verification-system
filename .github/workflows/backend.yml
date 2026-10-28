@@ -1,0 +1,58 @@
+name: Backend and MVP flow
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: payment_verification_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/payment_verification_test?schema=public
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/payment_verification_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: backend/pnpm-lock.yaml
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run typecheck && npm run lint && npm test && npm run build
+        working-directory: frontend
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm prisma:generate
+      - run: pnpm prisma:validate
+      - run: pnpm build
+      - run: pnpm test
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: pnpm test:ui-browser
+        env:
+          PLAYWRIGHT_MODULE: ../../frontend/node_modules/playwright
+      - run: pnpm test:e2e
+        env:
+          MVP_BROWSER_TEST: "1"
+          AUTH_BROWSER_TEST: "1"
+          PLAYWRIGHT_MODULE: ../../frontend/node_modules/playwright

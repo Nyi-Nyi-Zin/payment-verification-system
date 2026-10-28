@@ -1,69 +1,120 @@
-import { ConflictException, Injectable } from '@nestjs/common';
-import { PrismaService } from '../database.prisma';
-import { ProviderCode, TriggerType } from '../common/enums/domain.enums';
-import { StartVerificationDto } from './verification.dto';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from "@nestjs/common";
+import { PrismaService } from "../database.prisma";
+import { businessDate } from "../common/business-date";
+import { ProviderCode, TriggerType } from "../common/enums/domain.enums";
+import { StartVerificationDto } from "./verification.dto";
+import { OcrVerificationService } from "./ocr-verification.service";
 
 @Injectable()
 export class VerificationService {
-  constructor(private readonly prisma: PrismaService) {}
-
-  async startBatch(
-    dto: StartVerificationDto,
-    createdById?: string,
-  ): Promise<{ batchId: string; status: string }> {
-    const businessDate = this.parseDateOnly(dto.businessDate);
-    const dateRangeEnd = dto.dateRangeEnd
-      ? this.parseDateOnly(dto.dateRangeEnd)
-      : null;
-
-    const activeBatch = await this.prisma.verificationBatch.findFirst({
-      where: {
-        status: { in: ['CREATED', 'RUNNING'] },
-        businessDate,
-        dateRangeEnd,
-      },
-      select: { id: true },
-    });
-
-    if (activeBatch) {
-      throw new ConflictException(
-        'An active verification batch already exists for this date scope',
-      );
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ocr: OcrVerificationService,
+  ) {}
+  async startBatch(dto: StartVerificationDto, createdById?: string) {
+    if (
+      dto.triggerType !== TriggerType.MANUAL ||
+      dto.providers.length !== 1 ||
+      dto.providers[0] !== ProviderCode.KBZPAY
+    ) {
+      throw new BadRequestException("The MVP supports manual KBZPay runs only");
     }
-
-    const batch = await this.prisma.verificationBatch.create({
-      data: {
-        businessDate,
-        dateRangeEnd,
-        status: 'CREATED',
-        triggerType: dto.triggerType as 'MANUAL' | 'SCHEDULED',
-        providerScope: dto.providers as unknown as never,
-        createdById,
-        configSnapshot: {
-          ruleVersion: '1.0.0',
-          triggerType: dto.triggerType,
-          providers: dto.providers,
+    const date = businessDate(dto.businessDate);
+    if (dto.dateRangeEnd && dto.dateRangeEnd !== dto.businessDate)
+      throw new BadRequestException("Run one business date at a time");
+    const batch = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`batch:KBZPAY:${dto.businessDate}`}))`;
+      if (
+        await tx.verificationBatch.findFirst({
+          where: { businessDate: date, status: { in: ["CREATED", "RUNNING"] } },
+        })
+      ) {
+        throw new ConflictException(
+          "A verification batch is already active for this date",
+        );
+      }
+      return tx.verificationBatch.create({
+        data: {
+          businessDate: date,
+          status: "RUNNING",
+          triggerType: "MANUAL",
+          providerScope: ["KBZPAY"],
+          createdById,
+          startedAt: new Date(),
+          configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
         },
-      },
-      select: { id: true, status: true },
+      });
     });
-
-    return { batchId: batch.id, status: batch.status };
-  }
-
-  private parseDateOnly(value: string): Date {
-    const date = new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
-    if (Number.isNaN(date.getTime())) {
-      throw new Error(`Invalid date: ${value}`);
+    try {
+      const screenshots = await this.prisma.paymentScreenshot.findMany({
+        where: {
+          businessDate: date,
+          submittedProvider: "KBZPAY",
+          status: { in: ["RECEIVED", "PENDING_REVIEW", "FAILED", "UNMATCHED"] },
+        },
+        take: 20,
+        orderBy: { receivedAt: "asc" },
+      });
+      let failed = 0,
+        matched = 0,
+        duplicate = 0,
+        unmatched = 0;
+      for (const screenshot of screenshots) {
+        try {
+          const result = await this.ocr.processScreenshot(
+            screenshot.id,
+            batch.id,
+            createdById,
+          );
+          if (result.status === "VERIFIED") matched++;
+          else if (result.status === "DUPLICATE") duplicate++;
+          else if (result.status === "UNMATCHED") unmatched++;
+          else failed++;
+        } catch {
+          failed++;
+        }
+      }
+      const status = failed ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
+      await this.prisma.verificationBatch.update({
+        where: { id: batch.id },
+        data: {
+          status,
+          totalScreenshots: screenshots.length,
+          processed: screenshots.length,
+          pendingReview: 0,
+          matched,
+          duplicate,
+          unmatched,
+          failed,
+          completedAt: new Date(),
+        },
+      });
+      return {
+        batchId: batch.id,
+        status,
+        processed: screenshots.length,
+        failed,
+        matched,
+        duplicate,
+        unmatched,
+        mode: "AUTOMATIC_COMPARISON",
+      };
+    } catch (error) {
+      await this.prisma.verificationBatch.update({
+        where: { id: batch.id },
+        data: { status: "FAILED", completedAt: new Date() },
+      });
+      throw error;
     }
-    return date;
   }
-
-  normalizeProviders(providers: ProviderCode[]): ProviderCode[] {
+  normalizeProviders(providers: ProviderCode[]) {
     return [...new Set(providers)];
   }
-
-  normalizeTriggerType(triggerType: TriggerType): TriggerType {
+  normalizeTriggerType(triggerType: TriggerType) {
     return triggerType;
   }
 }

@@ -1,0 +1,69 @@
+.icon-arrow-right {
+  --icon-url: url("/icons/arrow-right.svg");
+}
+.icon-arrow-up-right {
+  --icon-url: url("/icons/arrow-up-right.svg");
+}
+.icon-check {
+  --icon-url: url("/icons/check.svg");
+}
+.icon-chevron-left {
+  --icon-url: url("/icons/chevron-left.svg");
+}
+.icon-chevron-right {
+  --icon-url: url("/icons/chevron-right.svg");
+}
+.icon-circle-alert {
+  --icon-url: url("/icons/circle-alert.svg");
+}
+.icon-circle-check {
+  --icon-url: url("/icons/circle-check.svg");
+}
+.icon-circle-x {
+  --icon-url: url("/icons/circle-x.svg");
+}
+.icon-file-spreadsheet {
+  --icon-url: url("/icons/file-spreadsheet.svg");
+}
+.icon-folder-open {
+  --icon-url: url("/icons/folder-open.svg");
+}
+.icon-image {
+  --icon-url: url("/icons/image.svg");
+}
+.icon-images {
+  --icon-url: url("/icons/images.svg");
+}
+.icon-languages {
+  --icon-url: url("/icons/languages.svg");
+}
+.icon-loader-circle {
+  --icon-url: url("/icons/loader-circle.svg");
+}
+.icon-log-out {
+  --icon-url: url("/icons/log-out.svg");
+}
+.icon-pause {
+  --icon-url: url("/icons/pause.svg");
+}
+.icon-play {
+  --icon-url: url("/icons/play.svg");
+}
+.icon-refresh-cw {
+  --icon-url: url("/icons/refresh-cw.svg");
+}
+.icon-scan-line {
+  --icon-url: url("/icons/scan-line.svg");
+}
+.icon-search {
+  --icon-url: url("/icons/search.svg");
+}
+.icon-upload {
+  --icon-url: url("/icons/upload.svg");
+}
+.icon-x {
+  --icon-url: url("/icons/x.svg");
+}
+.icon-zoom-in {
+  --icon-url: url("/icons/zoom-in.svg");
+}
