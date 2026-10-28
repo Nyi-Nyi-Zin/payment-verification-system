@@ -2,10 +2,11 @@ import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   GetObjectCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
 /** Objects are private. Only authenticated API endpoints return their bytes. */
@@ -75,6 +76,18 @@ export class S3Storage {
     if (!result.Body)
       throw new ServiceUnavailableException("Stored object is unavailable");
     return Buffer.from(await result.Body.transformToByteArray());
+  }
+
+  async deleteObject(key: string) {
+    const path = this.localPath(key);
+    if (this.client) {
+      await this.client.send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } else {
+      // localPath verifies this exact file remains below the storage root.
+      await rm(path, { force: true });
+    }
   }
 
   private localPath(key: string): string {

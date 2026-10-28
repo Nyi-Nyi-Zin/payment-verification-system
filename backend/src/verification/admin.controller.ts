@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -24,6 +25,7 @@ import { businessDate } from "../common/business-date";
 import { ScreenshotService } from "./screenshot.service";
 import { OcrVerificationService } from "./ocr-verification.service";
 import { ReceiptDetailsDto, UploadReceiptDto } from "./receipt.dto";
+import { ReceiptOcrEngine } from "../ocr/receipt-ocr.engine";
 
 type UserRequest = Request & { user: AuthenticatedUser };
 const pageNumber = (value = "1") => {
@@ -40,6 +42,7 @@ export class AdminController {
     private readonly prisma: PrismaService,
     private readonly screenshots: ScreenshotService,
     private readonly ocr: OcrVerificationService,
+    private readonly ocrEngine: ReceiptOcrEngine,
   ) {}
 
   @Get("dashboard")
@@ -66,7 +69,9 @@ export class AdminController {
       transactions,
       imports,
       receipts: Object.fromEntries(receipts.map((r) => [r.status, r._count])),
-      mode: "REVIEW_ONLY",
+      mode: "AUTOMATIC_COMPARISON",
+      ocrConfigured: this.ocrEngine.isConfigured(),
+      ocrDriver: this.ocrEngine.driver,
     };
   }
 
@@ -74,7 +79,6 @@ export class AdminController {
   async imports(@Query("date") date: string, @Query("page") page?: string) {
     const where = {
       provider: "KBZPAY" as const,
-      businessDate: businessDate(date),
     };
     const current = pageNumber(page);
     const [items, total] = await Promise.all([
@@ -177,6 +181,12 @@ export class AdminController {
   @Get("screenshots/:id")
   detail(@Param("id", ParseUUIDPipe) id: string) {
     return this.screenshots.detail(id);
+  }
+
+  @Delete("screenshots/:id")
+  @Roles(UserRole.ADMIN, UserRole.OPERATOR)
+  remove(@Param("id", ParseUUIDPipe) id: string, @Req() request: UserRequest) {
+    return this.screenshots.remove(id, request.user.id);
   }
 
   @Get("screenshots/:id/image")

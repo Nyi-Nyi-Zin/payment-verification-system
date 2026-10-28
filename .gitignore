@@ -20,12 +20,20 @@ fixtures/private/
 node_modules/
 dist/
 build/
+frontend/.next/
+frontend/.next-dev/
+frontend/out/
+frontend/*.tsbuildinfo
+backend/frontend-dist/
+backend/frontend-dist-staging/
+backend/frontend-dist-previous/
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 
 # Logs and local tooling
+.qa-tools/
 *.log
 coverage/
 .DS_Store

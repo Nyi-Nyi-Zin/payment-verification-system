@@ -45,7 +45,7 @@ export class VerificationService {
           providerScope: ["KBZPAY"],
           createdById,
           startedAt: new Date(),
-          configSnapshot: { mode: "REVIEW_ONLY" },
+          configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
         },
       });
     });
@@ -59,14 +59,21 @@ export class VerificationService {
         take: 20,
         orderBy: { receivedAt: "asc" },
       });
-      let failed = 0;
+      let failed = 0,
+        matched = 0,
+        duplicate = 0,
+        unmatched = 0;
       for (const screenshot of screenshots) {
         try {
-          await this.ocr.processScreenshot(
+          const result = await this.ocr.processScreenshot(
             screenshot.id,
             batch.id,
             createdById,
           );
+          if (result.status === "VERIFIED") matched++;
+          else if (result.status === "DUPLICATE") duplicate++;
+          else if (result.status === "UNMATCHED") unmatched++;
+          else failed++;
         } catch {
           failed++;
         }
@@ -78,7 +85,10 @@ export class VerificationService {
           status,
           totalScreenshots: screenshots.length,
           processed: screenshots.length,
-          pendingReview: screenshots.length - failed,
+          pendingReview: 0,
+          matched,
+          duplicate,
+          unmatched,
           failed,
           completedAt: new Date(),
         },
@@ -88,7 +98,10 @@ export class VerificationService {
         status,
         processed: screenshots.length,
         failed,
-        mode: "REVIEW_ONLY",
+        matched,
+        duplicate,
+        unmatched,
+        mode: "AUTOMATIC_COMPARISON",
       };
     } catch (error) {
       await this.prisma.verificationBatch.update({

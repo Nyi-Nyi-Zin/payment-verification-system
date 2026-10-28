@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { PrismaService } from "../database.prisma";
@@ -40,14 +44,16 @@ export class ImportService {
     const duplicate = await this.prisma.paymentImport.findUnique({
       where: { provider_fileHash: { provider: dto.provider, fileHash } },
     });
-    if (duplicate) return this.summary(duplicate, true);
     const parser = this.providers.getParser(dto.provider);
+    const parserVersion = `${parser.version}:${dto.scope || "day"}`;
+    if (duplicate?.parserVersion === parserVersion)
+      return this.summary(duplicate, true);
     let parsed;
     try {
       parsed = await parser.parse(
         file.buffer,
         file.originalname,
-        dto.businessDate,
+        dto.scope === "statement" ? undefined : dto.businessDate,
       );
     } catch {
       throw new BadRequestException("The Excel workbook could not be read");
@@ -77,25 +83,29 @@ export class ImportService {
       references.set(item.externalTransactionId, signature);
     }
     const storageKey = `imports/KBZPAY/${dto.businessDate}/${fileHash}.xlsx`;
-    await this.storage.putObject({
-      key: storageKey,
-      body: file.buffer,
-      contentType:
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
     return this.prisma.$transaction(
       async (tx) => {
         // Serialize provider imports, including overlapping files.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+        await this.storage.putObject({
+          key: storageKey,
+          body: file.buffer,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
         const existingFile = await tx.paymentImport.findUnique({
           where: { provider_fileHash: { provider: dto.provider, fileHash } },
         });
-        if (existingFile) return this.summary(existingFile, true);
+        if (existingFile?.parserVersion === parserVersion)
+          return this.summary(existingFile, true);
+        const dates = [
+          ...new Set(parsed.transactions.map((item) => item.businessDate)),
+        ].map(businessDate);
         const history = await tx.paymentTransaction.findMany({
           where: {
             provider: dto.provider,
             OR: [
-              { businessDate: date },
+              { businessDate: { in: dates } },
               { externalTransactionId: { in: [...references.keys()] } },
             ],
           },
@@ -106,19 +116,21 @@ export class ImportService {
             .map((t) => [t.externalTransactionId!, t]),
         );
         const fingerprints = new Set(history.map((t) => t.fingerprint));
-        const record = await tx.paymentImport.create({
-          data: {
-            provider: dto.provider,
-            businessDate: date,
-            fileName: file.originalname.slice(0, 255),
-            storageKey,
-            fileHash,
-            parserVersion: parser.version,
-            uploadedById,
-            totalRows: parsed.totalRows,
-            status: "PARSING",
-          },
-        });
+        const record =
+          existingFile ||
+          (await tx.paymentImport.create({
+            data: {
+              provider: dto.provider,
+              businessDate: date,
+              fileName: file.originalname.slice(0, 255),
+              storageKey,
+              fileHash,
+              parserVersion,
+              uploadedById,
+              totalRows: parsed.totalRows,
+              status: "PARSING",
+            },
+          }));
         const rows: Prisma.PaymentTransactionCreateManyInput[] = [];
         let inserted = 0;
         let skipped = 0;
@@ -146,10 +158,10 @@ export class ImportService {
             skipped++;
             continue;
           }
-          const { rawRow, businessDate: _date, ...fields } = item;
+          const { rawRow, businessDate: transactionDate, ...fields } = item;
           rows.push({
             ...fields,
-            businessDate: date,
+            businessDate: businessDate(transactionDate),
             sourceImportId: record.id,
             rawRowJson: JSON.parse(
               JSON.stringify(rawRow),
@@ -161,6 +173,10 @@ export class ImportService {
           inserted++;
         }
         if (rows.length) await tx.paymentTransaction.createMany({ data: rows });
+        if (existingFile)
+          await tx.paymentImportError.deleteMany({
+            where: { importId: record.id },
+          });
         if (parsed.errors.length)
           await tx.paymentImportError.createMany({
             data: parsed.errors.map((error) => ({
@@ -176,7 +192,9 @@ export class ImportService {
         const completed = await tx.paymentImport.update({
           where: { id: record.id },
           data: {
-            parsedRows: inserted,
+            parsedRows: (existingFile?.parsedRows || 0) + inserted,
+            totalRows: parsed.totalRows,
+            parserVersion,
             errorRows: parsed.errors.length,
             status: parsed.errors.length
               ? "COMPLETED_WITH_ERRORS"
@@ -193,7 +211,11 @@ export class ImportService {
             newValueJson: { inserted, skipped, errors: parsed.errors.length },
           },
         });
-        return { ...this.summary(completed, false), skippedRows: skipped };
+        return {
+          ...this.summary(completed, false),
+          parsedRows: inserted,
+          skippedRows: skipped,
+        };
       },
       { timeout: 60000 },
     );
@@ -215,5 +237,75 @@ export class ImportService {
       errorRows: record.errorRows,
       duplicate,
     };
+  }
+
+  async remove(id: string, actorId: string) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+        const record = await tx.paymentImport.findUnique({ where: { id } });
+        if (!record)
+          return {
+            success: true,
+            deleted: false,
+            deletedTransactions: 0,
+            retainedTransactions: 0,
+          };
+        if (
+          ["UPLOADED", "PARSING"].includes(record.status) ||
+          (await tx.paymentScreenshot.findFirst({
+            where: { status: "PROCESSING" },
+            select: { id: true },
+          }))
+        )
+          throw new ConflictException({
+            code: "UPLOAD_BUSY",
+            message:
+              "Uploads are being processed. Try again when processing finishes.",
+          });
+        const deleted = await tx.paymentTransaction.deleteMany({
+          where: {
+            sourceImportId: id,
+            usedTransaction: null,
+            verificationResults: { none: {} },
+          },
+        });
+        const retainedTransactions = await tx.paymentTransaction.count({
+          where: { sourceImportId: id },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: actorId,
+            action: "IMPORT_DELETED",
+            entityType: "PaymentImport",
+            entityId: id,
+            oldValueJson: {
+              fileName: record.fileName,
+              fileHash: record.fileHash,
+              status: record.status,
+            },
+            newValueJson: {
+              deletedTransactions: deleted.count,
+              retainedTransactions,
+            },
+          },
+        });
+        // Errors cascade; already referenced/used transactions survive with no source upload.
+        await tx.paymentImport.delete({ where: { id } });
+        if (
+          !(await tx.paymentImport.count({
+            where: { storageKey: record.storageKey },
+          }))
+        )
+          await this.storage.deleteObject(record.storageKey);
+        return {
+          success: true,
+          deleted: true,
+          deletedTransactions: deleted.count,
+          retainedTransactions,
+        };
+      },
+      { timeout: 15000 },
+    );
   }
 }

@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Prisma, Provider, PaymentScreenshot } from "@prisma/client";
+import {
+  Prisma,
+  Provider,
+  PaymentScreenshot,
+  ScreenshotStatus,
+} from "@prisma/client";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../database.prisma";
 import { S3Storage } from "../storage/s3.storage";
@@ -12,7 +17,8 @@ import { ProviderCode } from "../common/enums/domain.enums";
 import { businessDate, receiptTime } from "../common/business-date";
 import { ProviderRegistry } from "../providers/provider-registry";
 import { OcrExtraction } from "../providers/provider.contracts";
-import { GoogleVisionOcrEngine } from "../ocr/ocr.engine";
+import { OcrServiceError } from "../ocr/ocr.engine";
+import { ReceiptOcrEngine } from "../ocr/receipt-ocr.engine";
 import { MatchingEngine } from "./matching.engine";
 import { MatchCandidate } from "./verification.dto";
 import { ReceiptDetailsDto } from "./receipt.dto";
@@ -23,7 +29,7 @@ export class OcrVerificationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: S3Storage,
-    private readonly ocr: GoogleVisionOcrEngine,
+    private readonly ocr: ReceiptOcrEngine,
     private readonly providers: ProviderRegistry,
     private readonly config: ConfigService,
   ) {}
@@ -36,40 +42,37 @@ export class OcrVerificationService {
     const screenshot = await this.claim(screenshotId, batchId);
     let extraction: OcrExtraction | null = null;
     let reason: string | null = null;
-    let engine = "google-vision";
+    let engine = this.ocr.driver;
     let version = "v1";
-    if (!this.config.get<string>("ocr.googleVisionApiKey")) {
-      reason = "OCR_NOT_CONFIGURED_ENTER_DETAILS";
-    } else {
-      try {
-        const result = await this.ocr.extractText(
-          await this.storage.getObject(screenshot.storageKey),
-        );
-        engine = result.engine;
-        version = result.engineVersion;
-        const provider =
-          screenshot.submittedProvider ?? this.detectProvider(result.text);
-        if (provider !== "KBZPAY") reason = "KBZPAY_RECEIPT_REQUIRED";
-        else {
-          extraction = this.providers
-            .getExtractor(ProviderCode.KBZPAY)
-            .extract(result.text);
-          if (extraction.provider !== ProviderCode.KBZPAY) {
-            extraction = null;
-            reason = "KBZPAY_RECEIPT_REQUIRED";
-          } else if (extraction.date) {
-            try {
-              businessDate(extraction.date);
-            } catch {
-              extraction.date = null;
-              extraction.time = null;
-              reason = "OCR_FIELDS_NEED_REVIEW";
-            }
+    try {
+      const result = await this.ocr.extractText(
+        await this.storage.getObject(screenshot.storageKey),
+      );
+      engine = result.engine;
+      version = result.engineVersion;
+      const provider =
+        screenshot.submittedProvider ?? this.detectProvider(result.text);
+      if (provider !== "KBZPAY") reason = "KBZPAY_RECEIPT_REQUIRED";
+      else {
+        extraction = this.providers
+          .getExtractor(ProviderCode.KBZPAY)
+          .extract(result.text);
+        if (extraction.provider !== ProviderCode.KBZPAY) {
+          extraction = null;
+          reason = "KBZPAY_RECEIPT_REQUIRED";
+        } else if (extraction.date) {
+          try {
+            businessDate(extraction.date);
+          } catch {
+            extraction.date = null;
+            extraction.time = null;
+            reason = "OCR_FIELDS_NEED_REVIEW";
           }
         }
-      } catch {
-        reason = "OCR_FAILED_ENTER_DETAILS";
       }
+    } catch (error) {
+      reason =
+        error instanceof OcrServiceError ? error.reasonCode : "OCR_FAILED";
     }
     try {
       return await this.persist(
@@ -86,8 +89,7 @@ export class OcrVerificationService {
         where: { id: screenshotId, status: "PROCESSING" },
         data: {
           status: "FAILED",
-          lastError:
-            "Processing could not be saved. Retry or enter receipt details.",
+          lastError: "Processing could not be saved. Retry the comparison.",
         },
       });
       throw error;
@@ -171,6 +173,7 @@ export class OcrVerificationService {
             "FAILED",
             "UNMATCHED",
             "OCR_COMPLETED",
+            "DUPLICATE",
           ],
         },
       },
@@ -205,6 +208,8 @@ export class OcrVerificationService {
     const afterMinutes =
       this.config.get<number>("verification.defaultToleranceAfterMinutes") ?? 2;
     return this.prisma.$transaction(async (tx) => {
+      // Serialize comparison writes with import deletion so checked payments are retained.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
       await tx.$queryRaw`SELECT id FROM "PaymentScreenshot" WHERE id = ${screenshot.id}::uuid FOR UPDATE`;
       const current = await tx.paymentScreenshot.findUniqueOrThrow({
         where: { id: screenshot.id },
@@ -250,13 +255,39 @@ export class OcrVerificationService {
           )
         : null;
       const proposed = decision?.candidate;
-      const alreadyUsed = proposed
-        ? history.find((t) => t.id === proposed.transactionId)?.usedTransaction
-        : null;
-      const reasonCode =
-        fallbackReason ||
-        (alreadyUsed ? "TRANSACTION_ALREADY_USED" : decision?.reasonCode) ||
-        "NO_MATCH";
+      let reasonCode = fallbackReason || decision?.reasonCode || "NO_MATCH";
+      let status: ScreenshotStatus =
+        fallbackReason || !extraction?.amount || !extraction?.date
+          ? "FAILED"
+          : "UNMATCHED";
+      if (history.length > 5000) {
+        status = "FAILED";
+        reasonCode = "HISTORY_LIMIT_EXCEEDED";
+      }
+      if (!fallbackReason && (!extraction?.amount || !extraction?.date))
+        reasonCode = "OCR_FIELDS_INCOMPLETE";
+      if (
+        history.length <= 5000 &&
+        !fallbackReason &&
+        extraction?.date &&
+        extraction.amount &&
+        proposed &&
+        decision?.status === "VERIFIED"
+      ) {
+        // The unique database constraints arbitrate simultaneous receipts, including manual clients.
+        const reserved = await tx.usedTransaction.createMany({
+          data: [
+            {
+              provider: "KBZPAY",
+              transactionId: proposed.transactionId,
+              screenshotId: screenshot.id,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        status = reserved.count ? "VERIFIED" : "DUPLICATE";
+        if (!reserved.count) reasonCode = "TRANSACTION_ALREADY_USED";
+      }
       const previous = await tx.verificationResult.findFirst({
         where: { screenshotId: screenshot.id },
         orderBy: { createdAt: "desc" },
@@ -272,10 +303,13 @@ export class OcrVerificationService {
             createdById: actorId,
             totalScreenshots: 1,
             processed: 1,
-            pendingReview: 1,
+            matched: status === "VERIFIED" ? 1 : 0,
+            duplicate: status === "DUPLICATE" ? 1 : 0,
+            unmatched: status === "UNMATCHED" ? 1 : 0,
+            failed: status === "FAILED" ? 1 : 0,
             startedAt: new Date(),
             completedAt: new Date(),
-            configSnapshot: { mode: "REVIEW_ONLY" },
+            configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
           },
         });
         batchId = batch.id;
@@ -306,12 +340,18 @@ export class OcrVerificationService {
         });
       const data = {
         provider: "KBZPAY" as Provider,
-        status: "OPEN" as const,
+        status:
+          status === "VERIFIED"
+            ? ("APPROVED" as const)
+            : status === "DUPLICATE"
+              ? ("MARKED_DUPLICATE" as const)
+              : ("OPEN" as const),
         transactionId: proposed?.transactionId || null,
         matchLevel: decision?.matchLevel,
         matchScore: decision?.matchScore,
         reasonCode,
-        ruleVersion: "mvp-review-1",
+        ruleVersion: "automatic-comparison-1",
+        verifiedAt: status === "VERIFIED" ? new Date() : null,
         toleranceSnapshot: { beforeMinutes, afterMinutes },
         candidateSnapshot: proposed
           ? (JSON.parse(JSON.stringify(proposed)) as Prisma.InputJsonValue)
@@ -327,31 +367,48 @@ export class OcrVerificationService {
       await tx.paymentScreenshot.update({
         where: { id: screenshot.id },
         data: {
-          status: "PENDING_REVIEW",
+          status,
           detectedProvider: extraction?.provider || current.detectedProvider,
           businessDate: date,
-          lastError: fallbackReason,
+          lastError: status === "FAILED" ? reasonCode : null,
+        },
+      });
+      const counts = await tx.paymentScreenshot.groupBy({
+        by: ["status"],
+        where: { verificationResults: { some: { batchId } } },
+        _count: true,
+      });
+      const totals = Object.fromEntries(
+        counts.map((item) => [item.status, item._count]),
+      );
+      await tx.verificationBatch.update({
+        where: { id: batchId },
+        data: {
+          matched: totals.VERIFIED || 0,
+          duplicate: totals.DUPLICATE || 0,
+          unmatched: totals.UNMATCHED || 0,
+          failed: totals.FAILED || 0,
+          pendingReview: totals.PENDING_REVIEW || 0,
+          configSnapshot: { mode: "AUTOMATIC_COMPARISON" },
         },
       });
       await tx.auditLog.create({
         data: {
           actorUserId: actorId,
-          action:
-            engine === "manual-entry"
-              ? "RECEIPT_DETAILS_ENTERED"
-              : "OCR_PROCESSED",
+          action: `AUTO_${status}`,
           entityType: "PaymentScreenshot",
           entityId: screenshot.id,
           newValueJson: {
             reasonCode,
             proposedTransactionId: proposed?.transactionId || null,
-            mode: "REVIEW_ONLY",
+            mode: "AUTOMATIC_COMPARISON",
           },
         },
       });
       return {
         screenshotId: screenshot.id,
-        status: "PENDING_REVIEW",
+        status,
+        businessDate: dateText,
         reasonCode,
         candidateId: proposed?.transactionId || null,
       };

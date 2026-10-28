@@ -15,7 +15,7 @@ jobs:
           POSTGRES_DB: payment_verification_test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-        ports: ['5432:5432']
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -37,9 +37,22 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: backend/pnpm-lock.yaml
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run typecheck && npm run lint && npm test && npm run build
+        working-directory: frontend
       - run: pnpm install --frozen-lockfile
       - run: pnpm prisma:generate
       - run: pnpm prisma:validate
       - run: pnpm build
       - run: pnpm test
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: pnpm test:ui-browser
+        env:
+          PLAYWRIGHT_MODULE: ../../frontend/node_modules/playwright
       - run: pnpm test:e2e
+        env:
+          MVP_BROWSER_TEST: "1"
+          AUTH_BROWSER_TEST: "1"
+          PLAYWRIGHT_MODULE: ../../frontend/node_modules/playwright

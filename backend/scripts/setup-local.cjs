@@ -9,7 +9,7 @@ if (existsSync(path)) {
 const secret = () => randomBytes(48).toString("hex");
 writeFileSync(
   path,
-  `NODE_ENV=development\nPORT=3000\nDATABASE_URL=postgresql://payment_verification:payment_verification@localhost:5432/payment_verification?schema=public\nJWT_SECRET=${secret()}\nJWT_REFRESH_SECRET=${secret()}\nADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=${randomBytes(18).toString("base64url")}\nSTORAGE_DRIVER=local\nSTORAGE_LOCAL_DIR=./data/objects\nGOOGLE_VISION_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_WEBHOOK_SECRET=\nDEFAULT_TOLERANCE_BEFORE_MINUTES=2\nDEFAULT_TOLERANCE_AFTER_MINUTES=2\n`,
+  `NODE_ENV=development\nPORT=3000\nDATABASE_URL=postgresql://payment_verification:payment_verification@localhost:5432/payment_verification?schema=public\nJWT_SECRET=${secret()}\nJWT_REFRESH_SECRET=${secret()}\nADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=${randomBytes(18).toString("base64url")}\nSTORAGE_DRIVER=local\nSTORAGE_LOCAL_DIR=./data/objects\nOCR_DRIVER=tesseract\nTESSERACT_DATA_DIR=./data/tessdata\nOCR_LOCAL_TIMEOUT_MS=60000\nGOOGLE_VISION_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_WEBHOOK_SECRET=\nDEFAULT_TOLERANCE_BEFORE_MINUTES=2\nDEFAULT_TOLERANCE_AFTER_MINUTES=2\n`,
   { mode: 0o600, flag: "wx" },
 );
 console.log(

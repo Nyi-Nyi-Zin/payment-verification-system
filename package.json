@@ -1,0 +1,9 @@
+{
+  "name": "payment-verification-system",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix frontend run build && npm --prefix backend run build",
+    "start": "npm --prefix backend start",
+    "check:frontend": "npm --prefix frontend run typecheck && npm --prefix frontend run lint && npm --prefix frontend test"
+  }
+}

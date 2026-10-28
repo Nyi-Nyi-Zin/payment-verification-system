@@ -1,6 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
+  Param,
+  ParseUUIDPipe,
   Post,
   Req,
   UnauthorizedException,
@@ -22,6 +25,14 @@ import { ImportService } from "./import.service";
 @Roles(UserRole.ADMIN, UserRole.OPERATOR)
 export class ImportController {
   constructor(private readonly importService: ImportService) {}
+
+  @Delete(":id")
+  remove(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Req() request: Request & { user: AuthenticatedUser },
+  ) {
+    return this.importService.remove(id, request.user.id);
+  }
 
   @Post()
   @UseInterceptors(

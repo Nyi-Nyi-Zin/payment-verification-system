@@ -10,7 +10,7 @@ import {
 } from "./provider.contracts";
 
 const TIMEZONE = "Asia/Yangon";
-const PARSER_VERSION = "kbzpay-xlsx-1.0.0";
+const PARSER_VERSION = "kbzpay-xlsx-2.0.1";
 
 export class KbzpayExcelParser implements ProviderImportParser {
   readonly provider = ProviderCode.KBZPAY;
@@ -19,7 +19,7 @@ export class KbzpayExcelParser implements ProviderImportParser {
   async parse(
     input: Buffer,
     _fileName: string,
-    businessDate: string,
+    businessDate?: string,
   ): Promise<ParserResult> {
     const workbook = XLSX.read(input, {
       type: "buffer",
@@ -74,8 +74,31 @@ export class KbzpayExcelParser implements ProviderImportParser {
       if (description.toLowerCase().includes("opening balance")) {
         continue;
       }
+      const firstCell = this.text(row[0]);
+      if (
+        !this.text(record.tmrefno) &&
+        (/^(?:Thank you for using KBZPay|Customers are responsible for verifying|This is a auto-generated document)/i.test(
+          firstCell,
+        ) ||
+          /^(?:closing balance|total|credit total|debit total)$/i.test(
+            description,
+          ) ||
+          (!firstCell &&
+            !description &&
+            !this.text(record.credit) &&
+            !this.text(record.debit)))
+      )
+        continue;
 
       try {
+        // KBZPay posts QuickPay service charges under the principal payment's
+        // reference and timestamp. A fee is not a second claimable payment.
+        if (
+          /^QuickPay Fee Charge(?:\s+from\b|$)/i.test(description) &&
+          this.parseAmount(record.credit) === 0 &&
+          this.parseAmount(record.debit) < 0
+        )
+          continue;
         transactions.push(this.toTransaction(record, businessDate));
       } catch (error) {
         errors.push(
@@ -117,14 +140,15 @@ export class KbzpayExcelParser implements ProviderImportParser {
 
   private toTransaction(
     record: Record<string, unknown>,
-    businessDate: string,
+    businessDate?: string,
   ): CanonicalTransaction {
     const parsedDateTime = this.parseLocalDateTime(
       this.text(record["transactiondate&time"]),
     );
     const transactionAtLocal = parsedDateTime.local;
     const transactionAtUtc = parsedDateTime.utc;
-    if (transactionAtLocal.toISOString().slice(0, 10) !== businessDate) {
+    const transactionDate = transactionAtLocal.toISOString().slice(0, 10);
+    if (businessDate && transactionDate !== businessDate) {
       throw new Error(
         "Transaction date does not match the selected business date",
       );
@@ -175,7 +199,7 @@ export class KbzpayExcelParser implements ProviderImportParser {
 
       transactionAtLocal,
       localTimezone: TIMEZONE,
-      businessDate,
+      businessDate: transactionDate,
       senderName: null,
       senderPhone: this.extractPhone(description),
       receiverName: null,

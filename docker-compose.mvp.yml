@@ -13,16 +13,23 @@ services:
       timeout: 5s
       retries: 10
   api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       NODE_ENV: production
+      APP_ORIGINS: ${APP_ORIGINS:?Set HTTPS APP_ORIGINS}
+      TRUST_PROXY: ${TRUST_PROXY:-}
       DATABASE_URL: postgresql://payment_verification:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/payment_verification?schema=public
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
       STORAGE_DRIVER: local

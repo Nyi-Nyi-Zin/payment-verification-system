@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Use Node.js 22 or later, pnpm 11 or later, Docker, and a PostgreSQL-compatible development environment. Provider exports and screenshots should remain outside the repository unless they are sanitized test fixtures.
+Use Node.js 24 or later, pnpm 11 or later, Docker, and a PostgreSQL-compatible development environment. Provider exports and screenshots should remain outside the repository unless they are sanitized test fixtures.
 
 ## Start dependencies
 
@@ -22,6 +22,17 @@ pnpm prisma:validate
 pnpm prisma:migrate:dev --name init
 ```
 
+## Build the frontend
+
+From the repository root:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+```
+
+NestJS serves the generated export on port 3000. For optional hot reload, keep NestJS running on port 3000 and run `npm --prefix frontend run dev`; open port 3001. The development-only Next.js proxy forwards `/api/v1` to NestJS. Development uses `.next-dev` so it cannot collide with production `.next` output. Production continues to use static files and one NestJS server.
+
 ## Run the backend
 
 ```bash
@@ -30,6 +41,8 @@ pnpm start:dev
 ```
 
 The health endpoint is `GET /api/v1/health`. Authentication endpoints are `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me`, and `POST /api/v1/auth/logout`. The protected import contract is `POST /api/v1/imports` as multipart form-data with `provider`, `businessDate`, and `file`. The manual/scheduled batch contract is `POST /api/v1/verification/batches`.
+
+Browser sessions, staff management, role permissions, migration behavior, and origin/proxy configuration are documented in [authentication.md](authentication.md).
 
 ## Run tests
 

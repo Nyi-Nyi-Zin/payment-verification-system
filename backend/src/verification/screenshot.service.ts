@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -10,6 +11,7 @@ import { S3Storage } from "../storage/s3.storage";
 import { businessDate } from "../common/business-date";
 import { ProviderCode } from "../common/enums/domain.enums";
 import { UploadReceiptDto } from "./receipt.dto";
+import { OcrVerificationService } from "./ocr-verification.service";
 
 export function imageMime(bytes: Buffer): string {
   if (
@@ -31,6 +33,7 @@ export class ScreenshotService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: S3Storage,
+    private readonly comparison: OcrVerificationService,
   ) {}
 
   async upload(
@@ -46,73 +49,75 @@ export class ScreenshotService {
     const mimeType = imageMime(file.buffer);
     const fileHash = createHash("sha256").update(file.buffer).digest("hex");
     const storageKey = `receipts/${fileHash}`;
-    await this.storage.putObject({
-      key: storageKey,
-      body: file.buffer,
-      contentType: mimeType,
-    });
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${fileHash}))`;
-      const previous = await tx.paymentScreenshot.findFirst({
-        where: { fileHash },
-      });
-      if (previous)
+    const uploaded = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${fileHash}))`;
+        await this.storage.putObject({
+          key: storageKey,
+          body: file.buffer,
+          contentType: mimeType,
+        });
+        const previous = await tx.paymentScreenshot.findFirst({
+          where: { fileHash },
+        });
+        if (previous)
+          return {
+            screenshotId: previous.id,
+            status: previous.status,
+            // A previously blocked receipt may become valid after its original is deleted.
+            duplicate: previous.status !== "DUPLICATE",
+            businessDate: previous.businessDate?.toISOString().slice(0, 10),
+          };
+        const receipt = await tx.paymentScreenshot.create({
+          data: {
+            source: "WEB",
+            submittedProvider: dto.provider,
+            businessDate: date,
+            storageKey,
+            fileHash,
+            mimeType,
+            fileSizeBytes: file.buffer.length,
+            status: "RECEIVED",
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: actorId,
+            action: "SCREENSHOT_UPLOADED",
+            entityType: "PaymentScreenshot",
+            entityId: receipt.id,
+          },
+        });
         return {
-          screenshotId: previous.id,
-          status: previous.status,
-          duplicate: true,
-        };
-      const receipt = await tx.paymentScreenshot.create({
-        data: {
-          source: "WEB",
-          submittedProvider: dto.provider,
-          businessDate: date,
-          storageKey,
-          fileHash,
-          mimeType,
-          fileSizeBytes: file.buffer.length,
-          status: "PENDING_REVIEW",
-        },
-      });
-      const batch = await tx.verificationBatch.create({
-        data: {
-          businessDate: date,
-          status: "COMPLETED",
-          triggerType: "MANUAL",
-          providerScope: ["KBZPAY"],
-          createdById: actorId,
-          totalScreenshots: 1,
-          processed: 1,
-          pendingReview: 1,
-          startedAt: new Date(),
-          completedAt: new Date(),
-          configSnapshot: { mode: "REVIEW_ONLY" },
-        },
-      });
-      await tx.verificationResult.create({
-        data: {
           screenshotId: receipt.id,
-          batchId: batch.id,
-          provider: dto.provider,
-          status: "OPEN",
-          reasonCode: "AWAITING_RECEIPT_DETAILS",
-          ruleVersion: "mvp-review-1",
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          actorUserId: actorId,
-          action: "SCREENSHOT_UPLOADED",
-          entityType: "PaymentScreenshot",
-          entityId: receipt.id,
-        },
-      });
+          status: receipt.status,
+          duplicate: false,
+          businessDate: dto.businessDate,
+        };
+      },
+      { timeout: 15000 },
+    );
+    if (uploaded.duplicate) return uploaded;
+    try {
       return {
-        screenshotId: receipt.id,
-        status: receipt.status,
-        duplicate: false,
+        ...uploaded,
+        ...(await this.comparison.processScreenshot(
+          uploaded.screenshotId,
+          undefined,
+          actorId,
+        )),
       };
-    });
+    } catch {
+      // The upload is durable even if comparison fails; keep it available for retry.
+      await this.prisma.paymentScreenshot.updateMany({
+        where: {
+          id: uploaded.screenshotId,
+          status: { in: ["RECEIVED", "PROCESSING"] },
+        },
+        data: { status: "FAILED", lastError: "COMPARISON_FAILED" },
+      });
+      return { ...uploaded, status: "FAILED", reasonCode: "COMPARISON_FAILED" };
+    }
   }
 
   async list(date: string, page = 1, status?: string) {
@@ -192,5 +197,100 @@ export class ScreenshotService {
       bytes: await this.storage.getObject(record.storageKey),
       mimeType: record.mimeType,
     };
+  }
+
+  async remove(id: string, actorId: string) {
+    const snapshot = await this.prisma.paymentScreenshot.findUnique({
+      where: { id },
+    });
+    if (!snapshot) return { success: true, deleted: false };
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Use the same lock order as comparison, reservation and import deletion.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${snapshot.fileHash}))`;
+        await tx.$queryRaw`SELECT id FROM "PaymentScreenshot" WHERE id = ${id}::uuid FOR UPDATE`;
+        const record = await tx.paymentScreenshot.findUnique({ where: { id } });
+        if (!record) return { success: true, deleted: false };
+        if (record.status === "PROCESSING")
+          throw new ConflictException({
+            code: "UPLOAD_BUSY",
+            message:
+              "This receipt is being checked. Try again when checking finishes.",
+          });
+        if (
+          await tx.verificationBatch.findFirst({
+            where: {
+              status: { in: ["CREATED", "RUNNING"] },
+              OR: [
+                { results: { some: { screenshotId: id } } },
+                ...(record.businessDate
+                  ? [{ businessDate: record.businessDate }]
+                  : []),
+              ],
+            },
+            select: { id: true },
+          })
+        )
+          throw new ConflictException({
+            code: "UPLOAD_BUSY",
+            message:
+              "A receipt batch is running. Try again when checking finishes.",
+          });
+        const shared = await tx.paymentScreenshot.count({
+          where: { storageKey: record.storageKey, id: { not: id } },
+        });
+        const results = await tx.verificationResult.findMany({
+          where: { screenshotId: id },
+          select: { batchId: true },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: actorId,
+            action: "SCREENSHOT_DELETED",
+            entityType: "PaymentScreenshot",
+            entityId: id,
+            oldValueJson: {
+              status: record.status,
+              fileHash: record.fileHash,
+              source: record.source,
+            },
+            reason: "Upload removed; its used-payment claim released",
+          },
+        });
+        await tx.verificationResult.deleteMany({ where: { screenshotId: id } });
+        await tx.usedTransaction.deleteMany({ where: { screenshotId: id } });
+        // OCR results cascade; other receipts' payment claims remain protected.
+        await tx.paymentScreenshot.delete({ where: { id } });
+        for (const batchId of new Set(
+          results.map((result) => result.batchId),
+        )) {
+          const counts = await tx.paymentScreenshot.groupBy({
+            by: ["status"],
+            where: { verificationResults: { some: { batchId } } },
+            _count: true,
+          });
+          const totals = Object.fromEntries(
+            counts.map((row) => [row.status, row._count]),
+          );
+          const total = counts.reduce((sum, row) => sum + row._count, 0);
+          await tx.verificationBatch.updateMany({
+            where: { id: batchId, status: { notIn: ["CREATED", "RUNNING"] } },
+            data: {
+              totalScreenshots: total,
+              processed: total,
+              matched: totals.VERIFIED || 0,
+              duplicate: totals.DUPLICATE || 0,
+              pendingReview: totals.PENDING_REVIEW || 0,
+              unmatched: totals.UNMATCHED || 0,
+              failed: totals.FAILED || 0,
+            },
+          });
+        }
+        if (!shared) await this.storage.deleteObject(record.storageKey);
+        return { success: true, deleted: true };
+      },
+      { timeout: 15000 },
+    );
   }
 }

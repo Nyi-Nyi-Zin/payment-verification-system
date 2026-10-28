@@ -1,6 +1,6 @@
-import { ProviderCode } from '../common/enums/domain.enums';
+import { ProviderCode } from "../common/enums/domain.enums";
 
-export type TransactionDirection = 'INCOMING' | 'OUTGOING' | 'UNKNOWN';
+export type TransactionDirection = "INCOMING" | "OUTGOING" | "UNKNOWN";
 
 export interface CanonicalTransaction {
   provider: ProviderCode;
@@ -44,7 +44,11 @@ export interface ParserResult {
 export interface ProviderImportParser {
   readonly provider: ProviderCode;
   readonly version: string;
-  parse(input: Buffer, fileName: string, businessDate: string): Promise<ParserResult>;
+  parse(
+    input: Buffer,
+    fileName: string,
+    businessDate?: string,
+  ): Promise<ParserResult>;
 }
 
 export interface OcrExtraction {

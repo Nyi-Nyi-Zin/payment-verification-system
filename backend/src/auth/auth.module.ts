@@ -5,6 +5,10 @@ import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard, RolesGuard } from "./auth.guards";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
+import { BrowserAuth } from "./browser-auth";
+import { UsersController } from "./users.controller";
+import { UsersService } from "./users.service";
+import { GoogleAuth } from "./google-auth";
 
 @Global()
 @Module({
@@ -17,8 +21,16 @@ import { AuthService } from "./auth.service";
       }),
     }),
   ],
-  controllers: [AuthController],
-  providers: [LoginThrottle, AuthService, JwtAuthGuard, RolesGuard],
+  controllers: [AuthController, UsersController],
+  providers: [
+    LoginThrottle,
+    AuthService,
+    JwtAuthGuard,
+    RolesGuard,
+    BrowserAuth,
+    UsersService,
+    GoogleAuth,
+  ],
   exports: [JwtModule, AuthService, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

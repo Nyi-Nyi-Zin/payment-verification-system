@@ -10,8 +10,9 @@ import { Reflector } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
 import { Request } from "express";
 import { UserRole } from "@prisma/client";
-import { ROLES_KEY } from "./auth.decorators";
+import { PASSWORD_CHANGE_ALLOWED, ROLES_KEY } from "./auth.decorators";
 import { AuthenticatedUser } from "./auth.types";
+import { activeUser, identity } from "./session.helpers";
 
 interface AuthenticatedRequest extends Request {
   user?: AuthenticatedUser;
@@ -22,6 +23,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -35,31 +37,45 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException("Bearer token is required");
     }
 
+    let payload: AuthenticatedUser & { tokenType?: string; sid?: string };
     try {
-      const payload = this.jwtService.verify<
-        AuthenticatedUser & { tokenType?: string }
-      >(token);
+      payload = this.jwtService.verify(token, { algorithms: ["HS256"] });
       if (
         payload.tokenType !== "access" ||
         !payload.id ||
+        !payload.sid ||
         !Object.values(UserRole).includes(payload.role)
       ) {
         throw new UnauthorizedException("Invalid authentication payload");
       }
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.id },
-      });
-      if (!user || user.status !== "ACTIVE")
-        throw new UnauthorizedException("User is inactive");
-      request.user = {
-        id: user.id,
-        role: user.role,
-        emailOrPhone: user.emailOrPhone,
-      };
-      return true;
     } catch {
       throw new UnauthorizedException("Invalid or expired bearer token");
     }
+    const session = await this.prisma.authSession.findUnique({
+      where: { id: payload.sid },
+      include: { user: true },
+    });
+    if (
+      !session ||
+      session.userId !== payload.id ||
+      session.revokedAt ||
+      session.expiresAt <= new Date()
+    )
+      throw new UnauthorizedException("Session is no longer active");
+    activeUser(session.user);
+    if (
+      session.user.mustChangePassword &&
+      !this.reflector.getAllAndOverride<boolean>(PASSWORD_CHANGE_ALLOWED, [
+        context.getHandler(),
+        context.getClass(),
+      ])
+    )
+      throw new ForbiddenException({
+        code: "PASSWORD_CHANGE_REQUIRED",
+        message: "Change your temporary password before continuing",
+      });
+    request.user = { ...identity(session.user), sessionId: session.id };
+    return true;
   }
 }
 

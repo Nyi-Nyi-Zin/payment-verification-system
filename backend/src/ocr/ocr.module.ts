@@ -1,9 +1,11 @@
-import { Global, Module } from '@nestjs/common';
-import { GoogleVisionOcrEngine } from './ocr.engine';
+import { Global, Module } from "@nestjs/common";
+import { GoogleVisionOcrEngine } from "./ocr.engine";
+import { TesseractOcrEngine } from "./tesseract.engine";
+import { ReceiptOcrEngine } from "./receipt-ocr.engine";
 
 @Global()
 @Module({
-  providers: [GoogleVisionOcrEngine],
-  exports: [GoogleVisionOcrEngine],
+  providers: [GoogleVisionOcrEngine, TesseractOcrEngine, ReceiptOcrEngine],
+  exports: [ReceiptOcrEngine],
 })
 export class OcrModule {}

@@ -33,6 +33,7 @@ export class ReviewService {
     }
     try {
       return await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('import:KBZPAY'))`;
         await tx.$queryRaw`SELECT id FROM "PaymentScreenshot" WHERE id = ${screenshotId}::uuid FOR UPDATE`;
         const screenshot = await tx.paymentScreenshot.findUnique({
           where: { id: screenshotId },
